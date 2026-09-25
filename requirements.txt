@@ -1,0 +1,11 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+jupyter
+ipykernel
+nuscenes-devkit
+torch
+torchvision
+torch-geometric
+tqdm

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+tree.png
+.vsocde/
+
+# Not data 
+data/maps/ 
+data/samples/
+data/sweeps/
