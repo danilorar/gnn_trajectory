@@ -68,7 +68,7 @@ def view_sample_images(sample, data_dir):
         print(f"{channel}: {image_path} ({status})")
 
     # Plot every identified camera in a fixed 2-by-3 layout.
-    fig, axes = plt.subplots(2, 3, figsize=(10, 6))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 7))
 
     axes = axes.ravel()
     for axis, channel in zip(axes, sorted(camera_files)):
