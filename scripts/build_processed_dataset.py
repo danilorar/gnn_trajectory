@@ -509,29 +509,33 @@ if __name__ == "__main__":
 
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
     DATA_DIR = PROJECT_ROOT / "data"
-
     VERSION = "v1.0-trainval"
-
-    # Load full nuScenes train/validation metadata.
+    
+    # Load nuScenes
     nusc = NuScenes(
         version=VERSION,
         dataroot=str(DATA_DIR),
         verbose=True
     )
 
-    # Official nuScenes prediction target splits.
     train_targets = get_prediction_challenge_split(
         "train",
         dataroot=str(DATA_DIR)
     )
 
     val_targets = get_prediction_challenge_split(
+        "train_val",
+        dataroot=str(DATA_DIR)
+    )
+
+    test_targets = get_prediction_challenge_split(
         "val",
         dataroot=str(DATA_DIR)
     )
 
     print("Train targets:", len(train_targets))
     print("Val targets:", len(val_targets))
+    print("Test targets:", len(test_targets))
 
     # --------------------------------------------------------
     # IMPORTANT:
@@ -544,12 +548,12 @@ if __name__ == "__main__":
 
     # Build the full train and validation datasets
     train_dataset, train_skip_reasons = build_prediction_dataset(
-    nusc,
-    train_targets,
-    radius=20.0,
-    past_steps=4,
-    future_steps=12
-    )
+        nusc,
+        train_targets,
+        radius=20.0,
+        past_steps=4,
+        future_steps=12
+        )
 
     val_dataset, val_skip_reasons = build_prediction_dataset(
         nusc,
@@ -558,17 +562,29 @@ if __name__ == "__main__":
         past_steps=4,
         future_steps=12
     )
+    
+    test_dataset, test_skip_reasons = build_prediction_dataset(
+        nusc,
+        test_targets,
+        radius=20.0,
+        past_steps=4,
+        future_steps=12
+)
 
     print("\nTrain processed:", len(train_dataset))
     print("Train skipped:", train_skip_reasons)
 
     print("\nVal processed:", len(val_dataset))
     print("Val skipped:", val_skip_reasons)
+    
+    print("\nTest processed:", len(test_dataset))
+    print("Test skipped:", test_skip_reasons)
 
     # Validate processed datasets before saving
     for dataset_name, dataset in [
         ("train", train_dataset),
         ("val", val_dataset),
+        ("test", test_dataset),
     ]:
         for sample in dataset:
             assert sample["target_past"].shape == (5, 2)
@@ -591,12 +607,17 @@ if __name__ == "__main__":
     
     train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples.pkl"
     val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples.pkl"
+    test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples.pkl"
     
     with open(train_path, "wb") as f:
         pickle.dump(train_dataset, f)
 
     with open(val_path, "wb") as f:
         pickle.dump(val_dataset, f)
+        
+    with open(test_path, "wb") as f:
+        pickle.dump(test_dataset, f)
 
     print(f"Saved train dataset to: {train_path}")
     print(f"Saved val dataset to: {val_path}")
+    print(f"Saved test dataset to: {test_path}")
