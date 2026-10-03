@@ -507,12 +507,8 @@ def build_prediction_dataset(
 
 if __name__ == "__main__":
 
-    DATA_DIR = (
-        Path.home()
-        / "Desktop"
-        / "gnn_trajectory"
-        / "data"
-    )
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    DATA_DIR = PROJECT_ROOT / "data"
 
     VERSION = "v1.0-trainval"
 
