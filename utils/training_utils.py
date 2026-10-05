@@ -138,18 +138,16 @@ def evaluate_model(model, loader, device=None):
 
 # ========================================================
 
-def plot_losses(train_losses,val_losses,title="Training and Validation Losses"):
+def plot_losses(train_losses, val_losses, title="Training and Validation Losses"):
     plt.figure(figsize=(10, 6))
 
-    plt.plot(train_losses, label="Train ADE")
-    
-    plt.plot(val_losses, label="Validation ADE" )
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
 
     plt.xlabel("Epoch")
-    plt.ylabel("ADE (m)")
+    plt.ylabel("Loss")
     plt.title(title)
 
     plt.legend()
     plt.grid()
-
     plt.show()
