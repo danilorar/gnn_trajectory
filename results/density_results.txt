@@ -1,0 +1,7 @@
+sparse: ADE = 4.383 m, FDE = 10.381 m
+medium: ADE = 4.296 m, FDE = 10.258 m
+dense: ADE = 3.806 m, FDE = 9.147 m
+Density      CV ADE  GNN ADE  Ablated ADE   CV FDE  GNN FDE  Ablated FDE
+sparse        4.926    4.345        4.383   11.802   10.285       10.381
+medium        4.946    4.072        4.296   11.975    9.754       10.258
+dense         4.583    4.108        3.806   11.191    9.570        9.147
