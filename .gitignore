@@ -6,13 +6,17 @@ tree.png
 .vscode/
 *.pyc
 
-
 # Not data 
 data/maps/ 
 data/samples/
 data/sweeps/
 data/basemap/
 data/expansion/
+
+# nuScenes raw / downloaded data
+data/v1.0-trainval/
+data/v1.0-trainval_meta.tgz
+data/nuScenes-map-expansion-v1.3.zip
 
 v1.0-mini
 .v1.0-mini.txt
