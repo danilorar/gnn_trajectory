@@ -124,7 +124,7 @@ def get_past_positions(nusc, ann, past_steps=4):
 def get_neighbors_for_sample(
     nusc,
     sample_info,
-    radius=20.0,
+    radius=35.0,
     past_steps=4
 ):
     """
@@ -248,7 +248,7 @@ def get_neighbors_for_sample(
 def process_prediction_target(
     nusc,
     target_string,
-    radius=20.0,
+    radius=35.0,
     past_steps=4,
     future_steps=12
 ):
@@ -470,7 +470,7 @@ def process_prediction_target(
 def build_prediction_dataset(
     nusc,
     target_strings,
-    radius=20.0,
+    radius=35.0,
     past_steps=4,
     future_steps=12
 ):
@@ -550,7 +550,7 @@ if __name__ == "__main__":
     train_dataset, train_skip_reasons = build_prediction_dataset(
         nusc,
         train_targets,
-        radius=20.0,
+        radius=35.0,
         past_steps=4,
         future_steps=12
         )
@@ -558,7 +558,7 @@ if __name__ == "__main__":
     val_dataset, val_skip_reasons = build_prediction_dataset(
         nusc,
         val_targets,
-        radius=20.0,
+        radius=35.0,
         past_steps=4,
         future_steps=12
     )
@@ -566,7 +566,7 @@ if __name__ == "__main__":
     test_dataset, test_skip_reasons = build_prediction_dataset(
         nusc,
         test_targets,
-        radius=20.0,
+        radius=35.0,
         past_steps=4,
         future_steps=12
 )
