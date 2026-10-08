@@ -50,7 +50,7 @@ def category_one_hot(category):
       
 # ========================================================    
 
-def sample_to_graph(sample, edge_radius=20.0):
+def sample_to_graph(sample):
     """Convert a single sample from the dataset into a PyG Data object."""
 
     # ----------------------
@@ -100,20 +100,17 @@ def sample_to_graph(sample, edge_radius=20.0):
     # BUILD EDGES
     # ----------------------
 
-    edges = []
-
     num_nodes = len(current_positions)
 
-    for i in range(num_nodes):
-        for j in range(num_nodes):
-
-            if i == j:
-                continue
-
-            distance = np.linalg.norm(current_positions[j] - current_positions[i])
-
-            if distance < edge_radius:
-                edges.append([i, j])
+    # Fully connect every node pair; distance is passed via edge_attr
+    # below instead of used to prune edges, so attention can weigh
+    # relevance itself rather than a fixed cutoff.
+    edges = [
+        [i, j]
+        for i in range(num_nodes)
+        for j in range(num_nodes)
+        if i != j
+    ]
 
     # Handle graphs with no edges
     if len(edges) == 0:

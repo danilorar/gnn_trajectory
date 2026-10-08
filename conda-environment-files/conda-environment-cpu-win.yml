@@ -1,0 +1,24 @@
+name: gnn_trajectory
+channels:
+- pytorch
+- conda-forge
+- defaults
+dependencies:
+- python=3.11
+- pytorch=2.3.1
+- torchvision=0.18.1
+- cpuonly
+- pip
+- numpy
+- jupyter
+- matplotlib
+- scikit-learn
+- scipy
+- pandas
+- pywin32
+- pip:
+  - torch-geometric
+  - nuscenes-devkit
+  - pyquaternion
+  - tqdm
+  - pillow
