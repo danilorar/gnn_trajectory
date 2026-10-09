@@ -251,3 +251,140 @@ def bin_neighbor_effect(
         }
 
     return summary
+
+# ========================================================
+
+def neighbor_effect_by_distance(
+    model,
+    dataset,
+    graphs,
+    device=None
+):
+    """
+    Compare normal-model ADE against ablated-model ADE for every
+    sample that has at least one neighbor, paired with the distance
+    to that sample's nearest neighbor.
+
+    Returns:
+        nearest_distances
+        delta_ades
+
+    delta_ADE = normal ADE - ablated ADE
+
+    Negative -> neighbors help
+    Positive -> neighbors hurt
+    """
+
+    if device is None:
+        device = next(model.parameters()).device
+
+    nearest_distances = []
+    delta_ades = []
+
+    model.eval()
+
+    with torch.no_grad():
+
+        for sample, graph in zip(dataset, graphs):
+
+            if len(sample["neighbors_distances"]) == 0:
+                continue
+
+            nearest_distance = min(sample["neighbors_distances"])
+
+            # Normal graph
+            graph_device = graph.to(device)
+
+            batch = Batch.from_data_list(
+                [graph_device]
+            )
+
+            pred = model(batch)
+
+            target = graph_device.y.view(
+                1,
+                12,
+                2
+            )
+
+            normal_errors = torch.norm(
+                pred - target,
+                dim=2
+            )
+
+            normal_ade = (
+                normal_errors.mean().item()
+            )
+
+            # Ablated graph
+            ablated_graph = remove_neighbors(
+                graph
+            ).to(device)
+
+            ablated_batch = Batch.from_data_list(
+                [ablated_graph]
+            )
+
+            ablated_pred = model(
+                ablated_batch
+            )
+
+            ablated_errors = torch.norm(
+                ablated_pred - target,
+                dim=2
+            )
+
+            ablated_ade = (
+                ablated_errors.mean().item()
+            )
+
+            delta_ade = (
+                normal_ade - ablated_ade
+            )
+
+            nearest_distances.append(
+                nearest_distance
+            )
+
+            delta_ades.append(
+                delta_ade
+            )
+
+    return nearest_distances, delta_ades
+
+# ========================================================
+
+def bin_neighbor_effect_by_distance(
+    nearest_distances,
+    delta_ades,
+    bin_edges=(10, 20, 30, 40, 50)
+):
+    """
+    Group delta ADE values by nearest-neighbor-distance ranges.
+
+    delta_ADE = normal ADE - ablated ADE
+
+    Negative -> neighbors help
+    Positive -> neighbors hurt
+    """
+
+    nearest_distances = np.asarray(nearest_distances)
+    delta_ades = np.asarray(delta_ades)
+
+    edges = [0] + list(bin_edges) + [np.inf]
+
+    summary = {}
+
+    for lo, hi in zip(edges[:-1], edges[1:]):
+
+        label = f"{lo:g}-{hi:g}" if np.isfinite(hi) else f"{lo:g}+"
+
+        mask = (nearest_distances >= lo) & (nearest_distances < hi)
+        values = delta_ades[mask]
+
+        summary[label] = {
+            "mean_delta_ade": float(values.mean()) if len(values) else None,
+            "n": int(mask.sum()),
+        }
+
+    return summary
