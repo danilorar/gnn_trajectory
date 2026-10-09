@@ -25,11 +25,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from nuscenes.nuscenes import NuScenes
-from nuscenes.eval.prediction.splits import get_prediction_challenge_split
 from torch_geometric.loader import DataLoader
 
-from scripts.build_processed_dataset import build_prediction_dataset
 from utils.graph_utils import sample_to_graph
 from utils.models import GraphNetworkAttention
 from utils.training_utils import ade_loss, train_and_validate, evaluate_model
@@ -75,7 +72,7 @@ def neighbor_count_stats(dataset):
 
 
 def build_or_load_split(
-    nusc,
+    get_nusc,
     local_name,
     official_split,
     radius,
@@ -89,6 +86,15 @@ def build_or_load_split(
         with open(out_path, "rb") as f:
             return pickle.load(f)
 
+    # Imported here, not at module level: nuscenes-devkit (and the
+    # rest of build_processed_dataset's imports) are only needed when
+    # a candidate radius actually has no cached samples yet, so a
+    # cache-only run doesn't require raw nuScenes data or a working
+    # nuscenes-devkit install at all.
+    from nuscenes.eval.prediction.splits import get_prediction_challenge_split
+    from scripts.build_processed_dataset import build_prediction_dataset
+
+    nusc = get_nusc()
     targets = get_prediction_challenge_split(official_split, dataroot=nusc.dataroot)
 
     dataset, skip_reasons = build_prediction_dataset(
@@ -108,7 +114,7 @@ def build_or_load_split(
     return dataset
 
 
-def run_one_radius(nusc, radius, args):
+def run_one_radius(get_nusc, radius, args):
     print(f"\n=== radius = {radius:g} m ===")
 
     out_dir = Path(args.output_dir)
@@ -117,7 +123,7 @@ def run_one_radius(nusc, radius, args):
     for local_name, official_split in SPLITS.items():
         out_path = out_dir / f"r{radius:g}_{local_name}_prediction_samples.pkl"
         datasets[local_name] = build_or_load_split(
-            nusc,
+            get_nusc,
             local_name,
             official_split,
             radius,
@@ -187,12 +193,19 @@ def run_one_radius(nusc, radius, args):
     }
 
 
+def _json_default(obj):
+    """Let json.dump handle the numpy scalars evaluate_model/evaluate_by_density return."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 def write_summary(results, out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with open(out_dir / "radius_sweep_results.json", "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, default=_json_default)
 
     lines = [
         "| Radius | Val ADE | Val FDE | Test ADE | Test FDE | Mean neighbors (val) | Notes |",
@@ -242,9 +255,18 @@ def main():
     )
     args = parser.parse_args()
 
-    nusc = NuScenes(version=args.version, dataroot=args.data_dir, verbose=True)
+    _nusc_cache = {}
 
-    results = [run_one_radius(nusc, radius, args) for radius in args.radii]
+    def get_nusc():
+        if "nusc" not in _nusc_cache:
+            from nuscenes.nuscenes import NuScenes
+
+            _nusc_cache["nusc"] = NuScenes(
+                version=args.version, dataroot=args.data_dir, verbose=True
+            )
+        return _nusc_cache["nusc"]
+
+    results = [run_one_radius(get_nusc, radius, args) for radius in args.radii]
     write_summary(results, args.output_dir)
 
 
