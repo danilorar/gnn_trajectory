@@ -241,8 +241,8 @@ def main():
         default=str(PROJECT_ROOT / "data" / "processed" / "radius_sweep"),
     )
     parser.add_argument("--version", type=str, default="v1.0-trainval")
-    parser.add_argument("--past-steps", type=int, default=4)
-    parser.add_argument("--future-steps", type=int, default=12)
+    parser.add_argument("--past-steps", type=int, choices=[4], default=4)
+    parser.add_argument("--future-steps", type=int, choices=[12], default=12)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--epochs", type=int, default=30)
