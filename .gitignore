@@ -17,6 +17,9 @@ data/expansion/
 data/v1.0-trainval/
 data/v1.0-trainval_meta.tgz
 data/nuScenes-map-expansion-v1.3.zip
+data/nuScenes-map-expansion-v1.3/
+data/v1.0-test_meta.tgz
 
-v1.0-mini
-.v1.0-mini.txt
+# Generated radius-sweep datasets and model checkpoints
+data/processed/radius_sweep/**/*.pkl
+data/processed/radius_sweep/**/*.pth
