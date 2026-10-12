@@ -191,7 +191,7 @@ def main():
     # Evaluate on test set
     test_metrics = evaluate(model,test_loader, device)
 
-    # To 
+    # To ensure reproducibility, save a JSON of the run with info
     save_run_manifest(
         checkpoint_path,
         model=args.model,
