@@ -16,7 +16,8 @@ from nuscenes.eval.prediction.splits import get_prediction_challenge_split
 from nuscenes.map_expansion.map_api import NuScenesMap
 from nuscenes.prediction.input_representation.static_layers import get_lanes_in_radius # For map lane extraction
 
-from tools.view_sample_image import plot_processed_sample, turning_score
+
+MAP_CACHE = {} # Cache for NuScenesMap objects to avoid reloading the same map multiple times
 
 
 # ============================================================
@@ -277,10 +278,14 @@ def get_map_lanes_for_sample(
     # Load that Map
     # --------------------------------------------------------
     
-    nusc_map = NuScenesMap(
+    # To avoid reloading the same map multiple times, we cache NuScenesMap objects in MAP_CACHE
+    if map_name not in MAP_CACHE:
+        MAP_CACHE[map_name] = NuScenesMap(
         dataroot=nusc.dataroot,
         map_name=map_name
     )
+
+    nusc_map = MAP_CACHE[map_name]
     
     # --------------------------------------------------------
     # Find nearby lane + lane_connectors centerlines 
@@ -530,7 +535,7 @@ def process_prediction_target(
     )
     
     # NOTE: For debugging
-    print(" |  Nº of nearby lanes:", len(map_lanes))
+    # print(" | Nº of nearby lanes:", len(map_lanes))
     
     # if len(map_lanes) > 0:
     #     print("First lane shape:", map_lanes[0].shape)
@@ -650,72 +655,63 @@ if __name__ == "__main__":
     print("Val targets:", len(val_targets))
     print("Test targets:", len(test_targets))
     
+  
     # --------------------------------------------------------
-    # IMPORTANT:
-    # Do NOT process all 41k targets yet.
-    #
-    # First verify the new pipeline on a tiny subset.
+    # Build processed datasets
     # --------------------------------------------------------
-
-    # test_targets = train_targets[:1000] # change after to train_targets for full dataset
-
-    # NOTE: DEBUG 
-    train_targets = train_targets[:500]
-
-    # Build the full train and validation datasets
+    
     train_dataset, train_skip_reasons = build_prediction_dataset(
         nusc,
         train_targets,
         radius=35.0,
         past_steps=4,
         future_steps=12
-        )
+    )
+        
+    val_dataset, val_skip_reasons = build_prediction_dataset(
+        nusc,
+        val_targets,
+        radius=35.0,
+        past_steps=4,
+        future_steps=12
+    )
     
-    # NOTE: DEBUG 
-    turn_scores = [turning_score(sample) for sample in train_dataset]
-    best_idx = int(np.argmax(turn_scores))
-    print(f"Best turning score: {turn_scores[best_idx]}")
-    print("Turning angle [deg]:", np.degrees(turn_scores[best_idx]))
-    plot_processed_sample(train_dataset[best_idx])
-    
-    
-#     val_dataset, val_skip_reasons = build_prediction_dataset(
-#         nusc,
-#         val_targets,
-#         radius=35.0,
-#         past_steps=4,
-#         future_steps=12
-#     )
-    
-#     test_dataset, test_skip_reasons = build_prediction_dataset(
-#         nusc,
-#         test_targets,
-#         radius=35.0,
-#         past_steps=4,
-#         future_steps=12
-# )
+    test_dataset, test_skip_reasons = build_prediction_dataset(
+        nusc,
+        test_targets,
+        radius=35.0,
+        past_steps=4,
+        future_steps=12
+)
 
     print("\nTrain processed:", len(train_dataset))
     print("Train skipped:", train_skip_reasons)
     
-    # print("\nVal processed:", len(val_dataset))
-    # print("Val skipped:", val_skip_reasons)
+    print("\nVal processed:", len(val_dataset))
+    print("Val skipped:", val_skip_reasons)
     
-    # print("\nTest processed:", len(test_dataset))
-    # print("Test skipped:", test_skip_reasons)
+    print("\nTest processed:", len(test_dataset))
+    print("Test skipped:", test_skip_reasons)
 
     # Validate processed datasets before saving
     for dataset_name, dataset in [
         ("train", train_dataset),
-        # ("val", val_dataset),
-        # ("test", test_dataset),
+        ("val", val_dataset),
+        ("test", test_dataset),
     ]:
         for sample in dataset:
+            
             assert sample["target_past"].shape == (5, 2)
             assert sample["target_future"].shape == (12, 2)
 
             for neighbor_past in sample["neighbors_pasts"]:
                 assert neighbor_past.shape == (5, 2)
+                
+            # lane check 
+            for lane in sample["map_lanes"]:
+                assert lane.ndim == 2
+                assert lane.shape[1] == 2
+                assert np.isfinite(lane).all(), "Lane contains NaN or Inf values"
 
         print(f"{dataset_name} sample shapes are valid.")
 
@@ -728,19 +724,19 @@ if __name__ == "__main__":
     exist_ok=True
     )
     
-    # train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples.pkl"
-    # val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples.pkl"
-    # test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples.pkl"
+    train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples_map.pkl"
+    val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples_map.pkl"
+    test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples_map.pkl"
     
-    # with open(train_path, "wb") as f:
-    #     pickle.dump(train_dataset, f)
+    with open(train_path, "wb") as f:
+        pickle.dump(train_dataset, f)
 
-    # with open(val_path, "wb") as f:
-    #     pickle.dump(val_dataset, f)
+    with open(val_path, "wb") as f:
+        pickle.dump(val_dataset, f)
         
-    # with open(test_path, "wb") as f:
-    #     pickle.dump(test_dataset, f)
+    with open(test_path, "wb") as f:
+        pickle.dump(test_dataset, f)
 
-    # print(f"Saved train dataset to: {train_path}")
-    # print(f"Saved val dataset to: {val_path}")
-    # print(f"Saved test dataset to: {test_path}")
+    print(f"Saved train dataset to: {train_path}")
+    print(f"Saved val dataset to: {val_path}")
+    print(f"Saved test dataset to: {test_path}")
