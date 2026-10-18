@@ -134,7 +134,9 @@ class MapEncoder(nn.Module):
 
         lane_embeddings = global_max_pool(
             point_features,
-            map_lane_index
+            map_lane_index,
+            # Keep a zero embedding for lanes with no sampled points.
+            size=map_lane_batch.numel(),
         )
 
         map_embeddings = global_max_pool(
