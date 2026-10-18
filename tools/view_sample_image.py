@@ -106,7 +106,7 @@ def plot_processed_sample(sample):
     plt.figure(figsize=(8, 8))
     
     # Map lanes 
-    for lane in sample["map_lanes"]:
+    for lane in sample.get("map_lanes", []):
         plt.plot(lane[:, 0], lane[:, 1], color="gray", linewidth=1)
         
     # Neighbor histories 
