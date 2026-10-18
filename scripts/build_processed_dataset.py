@@ -1,13 +1,23 @@
-from matplotlib.pylab import sample
 import numpy as np
 
 from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from tqdm import tqdm
 from collections import Counter
 from pyquaternion import Quaternion
 
 from nuscenes.nuscenes import NuScenes
 from nuscenes.eval.prediction.splits import get_prediction_challenge_split
+from nuscenes.map_expansion.map_api import NuScenesMap
+from nuscenes.prediction.input_representation.static_layers import get_lanes_in_radius # For map lane extraction
+
+
+MAP_CACHE = {} # Cache for NuScenesMap objects to avoid reloading the same map multiple times
 
 
 # ============================================================
@@ -240,6 +250,93 @@ def get_neighbors_for_sample(
 
     return neighbors
 
+# ============================================================
+# Get map lanes for one sample 
+# ============================================================
+
+def get_map_lanes_for_sample(
+    nusc, 
+    sample_record, 
+    origin,
+    yaw, 
+    map_radius=50.0 # TODO: Hardcoded for now, but could be made a parameter
+): 
+    """
+    Find nearby lane centerlines for one prediction sample
+    and express them in the target-local coordinate frame.
+    """
+    
+    # --------------------------------------------------------
+    # Find which nuScenes map this sample belongs to
+    # --------------------------------------------------------
+    
+    scene_record = nusc.get("scene", sample_record["scene_token"])
+    log_record = nusc.get("log", scene_record["log_token"])
+    map_name = log_record["location"]
+    
+    # --------------------------------------------------------
+    # Load that Map
+    # --------------------------------------------------------
+    
+    # To avoid reloading the same map multiple times, we cache NuScenesMap objects in MAP_CACHE
+    if map_name not in MAP_CACHE:
+        MAP_CACHE[map_name] = NuScenesMap(
+        dataroot=nusc.dataroot,
+        map_name=map_name
+    )
+
+    nusc_map = MAP_CACHE[map_name]
+    
+    # --------------------------------------------------------
+    # Find nearby lane + lane_connectors centerlines 
+    # Returned structure: 
+    # 
+    # {
+    #     lane_token_1: [(x, y, yaw), ...],
+    #     lane_token_2: [(x, y, yaw), ...],
+    #     ...
+    # }
+    # --------------------------------------------------------
+    
+    lanes_world = get_lanes_in_radius(
+        x=float(origin[0]), # current target's x position
+        y=float(origin[1]), # current target's y position
+        radius=map_radius,
+        discretization_meters=1.0, # 1 meter between points
+        map_api=nusc_map       
+    )
+    
+    # --------------------------------------------------------
+    # Convert each lane polyline into target-local coordinates
+    # --------------------------------------------------------
+    
+    map_lanes =[]
+    
+    for lane_poses in lanes_world.values(): 
+        
+        if len(lane_poses) == 0: # Skip empty lanes
+            continue
+        
+        # Each pose is (x, y, lane_yaw) 
+        # For now we only want x and y 
+        lane_xy_world = np.array(
+            [
+                [pose[0], pose[1]] for pose in lane_poses
+            ], 
+            dtype=np.float32
+        )
+        
+        # Convert to target-local coordinates
+        lane_xy_local = world_to_local(
+            lane_xy_world,
+            origin,
+            yaw
+        )
+        
+        map_lanes.append(lane_xy_local)
+    
+    return map_lanes
+
 
 # ============================================================
 # Process one official nuScenes prediction target
@@ -250,11 +347,14 @@ def process_prediction_target(
     target_string,
     radius=35.0,
     past_steps=4,
-    future_steps=12
+    future_steps=12,
+    include_map=False,
 ):
     """
     Convert one official nuScenes prediction target into one
     processed trajectory-prediction example.
+
+    Map extraction is opt-in; existing callers need no map files.
 
     Returns
     -------
@@ -424,7 +524,28 @@ def process_prediction_target(
         radius=radius,
         past_steps=past_steps
     )
-
+    
+    # --------------------------------------------------------
+    # Find nearby map lanes
+    # --------------------------------------------------------
+    
+    if include_map:
+        map_lanes = get_map_lanes_for_sample(
+            nusc,
+            sample_record,
+            origin,
+            yaw,
+            map_radius=50.0
+        )
+    
+    # NOTE: For debugging
+    # print(" | Nº of nearby lanes:", len(map_lanes))
+    
+    # if len(map_lanes) > 0:
+    #     print("First lane shape:", map_lanes[0].shape)
+    #     print("First few local points")
+    #     print(map_lanes[0][:5])
+    
     # --------------------------------------------------------
     # Final processed sample
     # --------------------------------------------------------
@@ -452,6 +573,7 @@ def process_prediction_target(
             neighbor["instance_token"]
             for neighbor in neighbors
         ],
+        
 
         "scene_token": sample_record["scene_token"],
         "sample_token": sample_token,
@@ -459,6 +581,9 @@ def process_prediction_target(
         "current_ann_token": target_ann["token"],
         "target_category": target_ann["category_name"]
     }
+
+    if include_map:
+        processed_sample["map_lanes"] = map_lanes
 
     return processed_sample, None
 
@@ -472,8 +597,10 @@ def build_prediction_dataset(
     target_strings,
     radius=35.0,
     past_steps=4,
-    future_steps=12
+    future_steps=12,
+    include_map=False,
 ):
+    """Build samples, extracting lane context only when include_map=True."""
     dataset = []
     skip_reasons = Counter()
 
@@ -488,7 +615,8 @@ def build_prediction_dataset(
             target_string,
             radius=radius,
             past_steps=past_steps,
-            future_steps=future_steps
+            future_steps=future_steps,
+            include_map=include_map,
         )
 
         # Keep valid samples
@@ -507,7 +635,6 @@ def build_prediction_dataset(
 
 if __name__ == "__main__":
 
-    PROJECT_ROOT = Path(__file__).resolve().parents[1]
     DATA_DIR = PROJECT_ROOT / "data"
     VERSION = "v1.0-trainval"
     
@@ -536,31 +663,28 @@ if __name__ == "__main__":
     print("Train targets:", len(train_targets))
     print("Val targets:", len(val_targets))
     print("Test targets:", len(test_targets))
-
+    
+  
     # --------------------------------------------------------
-    # IMPORTANT:
-    # Do NOT process all 41k targets yet.
-    #
-    # First verify the new pipeline on a tiny subset.
+    # Build processed datasets
     # --------------------------------------------------------
-
-    # test_targets = train_targets[:1000] # change after to train_targets for full dataset
-
-    # Build the full train and validation datasets
+    
     train_dataset, train_skip_reasons = build_prediction_dataset(
         nusc,
         train_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
-        )
-
+        future_steps=12,
+        include_map=True,
+    )
+        
     val_dataset, val_skip_reasons = build_prediction_dataset(
         nusc,
         val_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
+        future_steps=12,
+        include_map=True,
     )
     
     test_dataset, test_skip_reasons = build_prediction_dataset(
@@ -568,12 +692,13 @@ if __name__ == "__main__":
         test_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
+        future_steps=12,
+        include_map=True,
 )
 
     print("\nTrain processed:", len(train_dataset))
     print("Train skipped:", train_skip_reasons)
-
+    
     print("\nVal processed:", len(val_dataset))
     print("Val skipped:", val_skip_reasons)
     
@@ -587,14 +712,20 @@ if __name__ == "__main__":
         ("test", test_dataset),
     ]:
         for sample in dataset:
+            
             assert sample["target_past"].shape == (5, 2)
             assert sample["target_future"].shape == (12, 2)
 
             for neighbor_past in sample["neighbors_pasts"]:
                 assert neighbor_past.shape == (5, 2)
+                
+            # lane check 
+            for lane in sample["map_lanes"]:
+                assert lane.ndim == 2
+                assert lane.shape[1] == 2
+                assert np.isfinite(lane).all(), "Lane contains NaN or Inf values"
 
         print(f"{dataset_name} sample shapes are valid.")
-
 
     # Save the processed datasets to disk
     import pickle
@@ -605,9 +736,9 @@ if __name__ == "__main__":
     exist_ok=True
     )
     
-    train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples.pkl"
-    val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples.pkl"
-    test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples.pkl"
+    train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples_map.pkl"
+    val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples_map.pkl"
+    test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples_map.pkl"
     
     with open(train_path, "wb") as f:
         pickle.dump(train_dataset, f)

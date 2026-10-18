@@ -25,6 +25,7 @@ from utils.graph_utils import sample_to_graph
 from utils.models import (
     GraphNetworkAttention,
     GraphNetworkAttentionMultimodal,
+    GraphNetworkAttentionMultimodalWithMap,
 )
 from utils.training_utils import (
     save_run_manifest,
@@ -38,9 +39,16 @@ from utils.training_utils import (
 
 # ========================================================
 
-def load_graphs(split):
+def load_graphs(split, use_map=False):
+
+    suffix = "_map" if use_map else ""
+
     path = (
-        PROJECT_ROOT / "data" / "processed" / f"nuscenes_{split}_prediction_samples.pkl")
+        PROJECT_ROOT
+        / "data"
+        / "processed"
+        / f"nuscenes_{split}_prediction_samples{suffix}.pkl"
+    )
 
     with open(path, "rb") as f:
         samples = pickle.load(f)
@@ -64,7 +72,7 @@ def main():
     # Model selection 
     parser.add_argument(
         "--model",
-        choices=["attention", "multimodal"],
+        choices=["attention", "multimodal", "multimodal_map"],
         required=True,
     )
 
@@ -107,10 +115,11 @@ def main():
     # -------------------
     # DATA
     # -------------------
+    use_map = args.model in ["multimodal_map"]
 
-    train_graphs = load_graphs("train")
-    val_graphs = load_graphs("val")
-    test_graphs = load_graphs("test")
+    train_graphs = load_graphs("train", use_map=use_map)
+    val_graphs = load_graphs("val", use_map=use_map)
+    test_graphs = load_graphs("test", use_map=use_map)
 
     train_loader = DataLoader(train_graphs, batch_size=args.batch_size, shuffle=True, generator=generator)
     val_loader = DataLoader(val_graphs, batch_size=args.batch_size, shuffle=False)
@@ -131,9 +140,15 @@ def main():
 
         metric_names = ["ADE", "FDE"]
 
-    else:
-
+    elif args.model == "multimodal":
         model = GraphNetworkAttentionMultimodal(num_modes=6).to(device)
+        criterion = best_of_k_ade_loss
+        evaluate = evaluate_multimodal_model
+
+        metric_names = ["minADE6", "minFDE6"]
+
+    elif args.model == "multimodal_map":
+        model = GraphNetworkAttentionMultimodalWithMap(num_modes=6).to(device)
         criterion = best_of_k_ade_loss
         evaluate = evaluate_multimodal_model
 
@@ -191,13 +206,19 @@ def main():
     # Evaluate on test set
     test_metrics = evaluate(model,test_loader, device)
 
-    # To 
+    # To ensure reproducibility, save a JSON of the run with info
     save_run_manifest(
         checkpoint_path,
         model=args.model,
         seed=args.seed,
         radius=35,
-        num_modes=6 if args.model == "multimodal" else 1,
+        
+        # if multimodal, the model predicts 6 trajectories, otherwise 1
+        num_modes=6 if args.model in [
+            "multimodal",
+            "multimodal_map"
+        ] else 1,
+        
         num_epochs=args.epochs,
         best_epoch=int(np.argmin(val_losses)) + 1,
         best_val_loss=min(val_losses),

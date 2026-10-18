@@ -9,6 +9,19 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
+# ========================================================
+
+class TrajectoryData(Data): 
+    def __inc__(self, key, value, *args, **kwargs):
+        """
+        Define the increment for each edge attribute.
+        So that when batching graphs, the edge indices are correctly offset for each graph in the batch.
+        """
+        
+        if key == 'map_lane_index':
+            return self.num_map_lanes
+        
+        return super().__inc__(key, value, *args, **kwargs)
 
 def general_category(category):
 
@@ -166,18 +179,49 @@ def sample_to_graph(sample):
         sample["target_future"],
         dtype=np.float32
     )
+    
+    # ----------------------
+    # MAP LANES 
+    # ---------------------
 
+    map_points = []
+    map_lane_index = []
+
+    map_lanes = sample.get("map_lanes", [])
+
+    num_map_lanes = len(map_lanes)
+
+    for lane_idx, lane in enumerate(map_lanes):
+        # Each lane is a sequence of points, which we flatten into a single vector
+        for point in lane: 
+            map_points.append(point)
+            map_lane_index.append(lane_idx)
+            
+    # Only convert AFTER all appending is finished
+    if len(map_points) == 0:
+        map_points = np.empty((0, 2), dtype=np.float32)
+        map_lane_index = np.empty((0,), dtype=np.int64)
+    else:
+        map_points = np.array(map_points, dtype=np.float32)
+        map_lane_index = np.array(map_lane_index, dtype=np.int64)
 
     # ----------------------
     # PyG GRAPH
     # ----------------------
 
-    graph = Data(
+    graph = TrajectoryData(
+        
+        # Attributes for nodes and edges
         x=torch.tensor(x, dtype=torch.float32),
         edge_index=torch.tensor(edge_index, dtype=torch.long),
         edge_attr=torch.tensor(edge_attr, dtype=torch.float32),
         y=torch.tensor(y, dtype=torch.float32),
-        target_mask=torch.tensor(target_mask, dtype=torch.bool)
+        target_mask=torch.tensor(target_mask, dtype=torch.bool), 
+        
+        # Attributes for map lanes
+        map_points=torch.tensor(map_points, dtype=torch.float32),
+        map_lane_index=torch.tensor(map_lane_index, dtype=torch.long),
+        num_map_lanes=num_map_lanes,
     )
 
     return graph

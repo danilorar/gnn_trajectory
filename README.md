@@ -1,43 +1,103 @@
-# gnn_trajectory
+# GNN Trajectory Prediction
+
+Interaction-aware vehicle trajectory prediction on the **nuScenes** dataset using Graph Neural Networks.
+
+The main question behind the project is:
+
+> **When and why does modelling nearby road-user interaction improve future trajectory prediction?**
+
+The project is still in development. The current pipeline predicts 6 seconds of future motion from roughly 2 seconds of target and neighbour history, using a target-centred coordinate frame.
+
+## Current approach
+
+The main models currently implemented are:
+
+- **Attention GNN** — deterministic trajectory prediction using two GATv2 layers.
+- **Multimodal Attention GNN** — predicts 6 possible future trajectories using best-of-K training.
+- **Map context extension** — work in progress; nearby nuScenes lane centre-lines are being added as static road context.
+
+For graph-based models, the target vehicle and nearby road users within **35 m** are represented as nodes. Selected agents are connected with a fully connected directed graph, with relative position and distance used as edge features.
+
+## Data representation
+
+Each prediction sample contains:
+
+```text
+target history       5 xy positions  (~2 s)
+neighbour histories  5 xy positions per road user
+future target        12 xy positions (~6 s)
+map lanes            nearby lane centre-line polylines (WIP)
+```
+
+All trajectories and map geometry are transformed into the target vehicle's local frame, where the target is at `(0, 0)` and its current heading points along `+x`.
+
+## Project structure
+
+```text
+notebooks/   experiments, analysis and visualisation
+scripts/     dataset construction and reproducible training entry points
+tools/       inspection / visualisation helpers
+utils/       graph construction, models, training and analysis utilities
+doc/         experiment notes and results
+```
 
 ## Environment setup
-The Python environment of this project is managed with Conda. See [instructions/01_environment_setup.md](instructions/01_environment_setup.md) for the full instructions. In short:
-```
+
+The Python environment is managed with Conda. Full instructions are in [`instructions/01_environment_setup.md`](instructions/01_environment_setup.md).
+
+```bash
 conda env create -f conda-environment-files/conda-environment-cpu-<x>.yml
 conda activate gnn_trajectory
 ```
-, where `<x>` is either `unix` or `win`.
 
-## Train the final models
+where `<x>` is either `unix` or `win`.
 
-From the project root, with the project environment activated:
+## Training
+
+From the project root:
 
 ```bash
 python scripts/train_model.py --model attention
 python scripts/train_model.py --model multimodal
 ```
 
-Both use the existing 35 m datasets under `data/processed/` and the same fully
-connected directed graph construction. Defaults: seed 42, 30 epochs, batch size
-64, Adam learning rate 0.001. CUDA is used when available, otherwise CPU.
+Both models use the processed 35 m datasets under `data/processed/`. Defaults are seed 42, 30 epochs, batch size 64 and Adam with learning rate `0.001`.
+
+A custom run can be started with:
 
 ```bash
-python scripts/train_model.py --model multimodal --seed 123 --epochs 30 --batch-size 64 --lr 0.001 --checkpoint-dir checkpoints
+python scripts/train_model.py \
+  --model multimodal \
+  --seed 123 \
+  --epochs 30 \
+  --batch-size 64 \
+  --lr 0.001
 ```
 
-The best validation-loss checkpoint is reloaded for validation and test evaluation.
-Checkpoints default to `checkpoints/{model}_seed{seed}_best.pth`. Repeating the same
-model and seed in the same directory replaces that checkpoint; use another
-`--checkpoint-dir` to preserve separate experiments. Metrics are printed to the
-terminal. Random generators are seeded, but CUDA graph operations may still vary
-across runs or hardware.
+The best validation-loss checkpoint is reloaded for evaluation. A JSON manifest is saved next to each checkpoint with the model configuration, seed, training settings, metrics and library versions.
 
-A sibling JSON manifest records the checkpoint's model, seed, radius, training
-settings, best epoch, validation/test metrics, and PyTorch/PyG versions. It is
-written after the best checkpoint is reloaded and evaluated.
+## Evaluation
 
-Attention reports ADE/FDE. The six-mode model trains with best-of-K ADE and reports
-minADE6/minFDE6, minimized independently across modes. Historical notebook FDE
-results instead use the best-ADE mode and are not the same metric.
+The deterministic model reports:
 
-The notebooks retain explanatory code. Camera-inspection helpers live in `tools/`.
+- **ADE** — Average Displacement Error
+- **FDE** — Final Displacement Error
+
+The six-mode model reports:
+
+- **minADE6**
+- **minFDE6**
+
+where ADE and FDE are minimized independently across the six predicted trajectories.
+
+## Work in progress
+
+Current work is focused on adding **lane/map context** to the multimodal interaction model. The intended comparison is:
+
+```text
+Multimodal GATv2
+        vs.
+Multimodal GATv2 + lane context
+```
+
+The next stages include target-only baselines, deeper interaction analysis, qualitative scene comparisons and final model evaluation.

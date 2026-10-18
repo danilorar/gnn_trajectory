@@ -21,6 +21,7 @@ def is_readable_image(image_path):
     except (OSError, Image.UnidentifiedImageError):
         return False
 
+# =====================================================================
 
 def view_sample_images(sample, data_dir):
     """Display every camera image associated with a processed sample."""
@@ -94,7 +95,80 @@ def view_sample_images(sample, data_dir):
     fig.suptitle(f"Camera images for sample {sample_token}", fontsize=14)
     fig.tight_layout()
     plt.show()
+    
+# =====================================================================
+    
+def plot_processed_sample(sample):
+    """Plot the processed sample's map lanes and target trajectory."""
+    
+    import matplotlib.pyplot as plt
+    
+    plt.figure(figsize=(8, 8))
+    
+    # Map lanes 
+    for lane in sample.get("map_lanes", []):
+        plt.plot(lane[:, 0], lane[:, 1], color="gray", linewidth=1)
+        
+    # Neighbor histories 
+    for neighbor_past in sample["neighbors_pasts"]:
+        plt.plot(neighbor_past[:, 0], neighbor_past[:, 1], color="blue", linewidth=1)
+        
+    # Target history (past andfuture)
+    plt.plot(
+        sample["target_past"][:, 0],
+        sample["target_past"][:, 1],
+        marker="o",
+        linewidth=0.5,
+        alpha=0.7,
+        label="Target Past", 
+    )
+    
+    plt.plot(
+        sample["target_future"][:, 0],
+        sample["target_future"][:, 1],
+        marker="o",
+        linewidth=0.5,
+        alpha=0.7,
+        label="target future"
+    )
+    
+    # Current target position 
+    plt.scatter([0], [0], s=80, label="target now")
+    
+    # Plot settings
+    plt.xlim(-60, 60)
+    plt.ylim(-60, 60)
+    plt.axis("equal")
+    plt.xlabel("x [m]")
+    plt.ylabel("y [m]")
+    plt.legend()
+    plt.grid()
+    plt.show()
+    
+# =====================================================================    
 
+def turning_score(sample):
+    """Compute a score for the turning angle of the target trajectory in a processed sample."""
+    import numpy as np
+    
+    future = sample["target_future"]
+
+    final_position = future[-1]
+
+    distance = np.linalg.norm(final_position)
+
+    # Ignore targets that barely move.
+    if distance < 5.0:
+        return 0.0
+
+    angle = np.arctan2(
+        final_position[1],
+        final_position[0]
+    )
+
+    return abs(angle)
+    
+# ===================================================================== 
 
 if __name__ == "__main__":
     raise SystemExit("Import view_sample_images(sample, data_dir) from a notebook or script.")
