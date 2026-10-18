@@ -347,11 +347,14 @@ def process_prediction_target(
     target_string,
     radius=35.0,
     past_steps=4,
-    future_steps=12
+    future_steps=12,
+    include_map=False,
 ):
     """
     Convert one official nuScenes prediction target into one
     processed trajectory-prediction example.
+
+    Map extraction is opt-in; existing callers need no map files.
 
     Returns
     -------
@@ -526,13 +529,14 @@ def process_prediction_target(
     # Find nearby map lanes
     # --------------------------------------------------------
     
-    map_lanes = get_map_lanes_for_sample(
-        nusc,
-        sample_record,
-        origin,
-        yaw,
-        map_radius=50.0
-    )
+    if include_map:
+        map_lanes = get_map_lanes_for_sample(
+            nusc,
+            sample_record,
+            origin,
+            yaw,
+            map_radius=50.0
+        )
     
     # NOTE: For debugging
     # print(" | Nº of nearby lanes:", len(map_lanes))
@@ -570,7 +574,6 @@ def process_prediction_target(
             for neighbor in neighbors
         ],
         
-        "map_lanes": map_lanes,
 
         "scene_token": sample_record["scene_token"],
         "sample_token": sample_token,
@@ -578,6 +581,9 @@ def process_prediction_target(
         "current_ann_token": target_ann["token"],
         "target_category": target_ann["category_name"]
     }
+
+    if include_map:
+        processed_sample["map_lanes"] = map_lanes
 
     return processed_sample, None
 
@@ -591,8 +597,10 @@ def build_prediction_dataset(
     target_strings,
     radius=35.0,
     past_steps=4,
-    future_steps=12
+    future_steps=12,
+    include_map=False,
 ):
+    """Build samples, extracting lane context only when include_map=True."""
     dataset = []
     skip_reasons = Counter()
 
@@ -607,7 +615,8 @@ def build_prediction_dataset(
             target_string,
             radius=radius,
             past_steps=past_steps,
-            future_steps=future_steps
+            future_steps=future_steps,
+            include_map=include_map,
         )
 
         # Keep valid samples
@@ -665,7 +674,8 @@ if __name__ == "__main__":
         train_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
+        future_steps=12,
+        include_map=True,
     )
         
     val_dataset, val_skip_reasons = build_prediction_dataset(
@@ -673,7 +683,8 @@ if __name__ == "__main__":
         val_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
+        future_steps=12,
+        include_map=True,
     )
     
     test_dataset, test_skip_reasons = build_prediction_dataset(
@@ -681,7 +692,8 @@ if __name__ == "__main__":
         test_targets,
         radius=35.0,
         past_steps=4,
-        future_steps=12
+        future_steps=12,
+        include_map=True,
 )
 
     print("\nTrain processed:", len(train_dataset))
