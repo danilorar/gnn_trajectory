@@ -186,10 +186,12 @@ def sample_to_graph(sample):
 
     map_points = []
     map_lane_index = []
-    
-    num_map_lanes = len(sample["map_lanes"])
-    
-    for lane_idx, lane in enumerate(sample["map_lanes"]):
+
+    map_lanes = sample.get("map_lanes", [])
+
+    num_map_lanes = len(map_lanes)
+
+    for lane_idx, lane in enumerate(map_lanes):
         # Each lane is a sequence of points, which we flatten into a single vector
         for point in lane: 
             map_points.append(point)
