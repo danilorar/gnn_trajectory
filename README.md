@@ -19,18 +19,11 @@ Seeds 42, 123 and 2026; 60 epochs, standard unweighted sampling, best validation
 
 GRU improves overall ADE/FDE by **3.81% / 6.09%**. Gains at 30–60° endpoint angles are **11.62% / 18.08%**, and at 60°+ **6.38% / 7.59%**. Sharp-turn errors remain high. The sharpest bin has 87 samples, and three seeds do not provide scene-level confidence intervals.
 
-See the [canonical comparison](doc/results/final_decoder_multiseed_comparison.md), [machine-readable results and manifests](doc/results/final_decoder_multiseed_comparison.json), [final figure](doc/figures/final_decoder_multiseed_comparison.png), and [diagnostic chain](doc/results/diagnostic_summary.md). The canonical artifacts preserve the pre-cleanup experiment snapshot; use the commands below for the current workflow.
+See the [canonical comparison](docs/results/final_decoder_multiseed_comparison.md), [machine-readable results and manifests](docs/results/final_decoder_multiseed_comparison.json), [final figure](docs/figures/comparisons/final_decoder_multiseed_comparison.png), and [diagnostic chain](docs/results/diagnostic_summary.md). The canonical artifacts preserve the pre-cleanup experiment snapshot; use the commands below for the current workflow.
 
 ## Setup and data
 
-Use the repository environment files; see [environment setup](instructions/01_environment_setup.md). For example, on Linux:
-
-```bash
-conda env create -f conda-environment-files/conda-environment-cpu-unix.yml
-conda activate gnn_trajectory
-```
-
-The Conda files are starter environments and predate the final experiment runtime (Python 3.12.3, PyTorch 2.14.1, PyG 2.8.0.post1). Original library versions remain recorded in the manifests; cross-version/device reruns need not be bit-identical.
+Use the existing project Python environment. The final experiment runtime used Python 3.12.3, PyTorch 2.14.1 and PyG 2.8.0.post1. Original library versions remain recorded in the manifests; cross-version/device reruns need not be bit-identical. The former Conda setup files and setup guide are no longer present in this checkout.
 
 Run commands from the project root. Existing non-map samples are under `data/processed/`. Map-aware training requires these generated files, which are excluded from Git:
 
@@ -76,13 +69,23 @@ Evaluation-only mode loads the saved weights and prints validation/test metrics.
 
 The interaction analysis compares the saved seed-42 target-only MLP and deterministic GATv2 checkpoints, grouped by neighbor count and nearest-neighbor distance. Positive `MLP ADE − GAT ADE` means GAT performs better; it does not establish a causal effect of neighbors.
 
-For a qualitative view of the final GRU on test sample 6706, including all six modes:
+For a qualitative view of an individual test sample, including all six GRU modes:
 
 ```bash
-python tools/plot_qualitative_prediction.py --sample-index 6706 --show
+python tools/plot_qualitative_prediction.py
 ```
 
-`--show` opens a desktop plot without writing files. To save a new PNG plot, omit `--show` and supply an unused `--output /path/to/new.png`. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
+The script always opens a desktop plot. Change `SAMPLE_INDEX` near the top of the file to select another test sample. To also save a PNG, supply an unused `--output /path/to/new.png`; `--checkpoint` selects a different GRU checkpoint.
+
+Three ten-frame GIFs and three-panel PNGs are available under `docs/figures/qualitative/`: a [right turn in scene-0556](docs/figures/qualitative/scene0556_right_turn/rightturn_simple.gif), a contrasting [left turn in scene-0783](docs/figures/qualitative/scene0783_left_turn/sequence.gif) with visible early forecast misses, and [straight driving among many nearby agents in scene-0104](docs/figures/qualitative/scene0104_straight_dense/sequence.gif). The dense example shows all neighbors with a subset of persistent IDs labelled for readability. Each folder keeps the GIF, PNG and source JSON together. To reproduce a trajectory-only sequence, pass its JSON to the sequence renderer. The right-turn GIF is a separate camera-paired presentation; its JSON and PNG describe the trajectory-only source, and the camera-pairing scripts and downloaded photos remain outside the repository. For example:
+
+```bash
+python tools/plot_prediction_sequence.py \
+  --sequence docs/figures/qualitative/scene0783_left_turn/sequence.json \
+  --output-dir /tmp/scene0783_reproduced
+```
+
+This uses the saved sequence JSON, processed test samples, and seed-2026 GRU checkpoint. The JSON includes original target poses, timestamps, and persistent agent IDs, so temporary caches and raw nuScenes metadata are not needed. Existing output files are protected against overwrite. The highlighted trajectory is the lowest-ADE mode selected using ground truth at each timestamp. These are curated examples, not aggregate performance evidence.
 
 ## Repository layout
 
@@ -91,10 +94,13 @@ scripts/     build_processed_dataset.py, train_model.py, run_interaction_analysi
              run_turn_angle_analysis.py
 scripts/archive/ historical radius sweep and notebook analysis helpers
 utils/       models.py, graph_utils.py, training_utils.py
-notebooks/   retained exploratory/teaching history; generated outputs cleared
-tools/       camera and processed-sample inspection helpers
-doc/results/ canonical decoder comparison, diagnostic summary and freeze audit
-doc/figures/ final matched decoder figure
+scripts/archive/notebooks/ retained exploratory/teaching history; generated outputs cleared
+tools/       single-sample and sequence prediction plots
+tools/archive/ historical camera and processed-sample inspection helpers
+docs/results/ canonical decoder comparison, diagnostics and interaction/radius results
+docs/figures/ comparison figure and separate qualitative cases
+docs/papers/ reference PDFs
+docs/archive/ historical audit and superseded example metadata
 ```
 
-`scripts/archive/run_radius_sweep.py` remains as the historical reproduction entry point for the [35 m selection](doc/radius_sweep_results.md); no new sweep is needed. Exploratory notebooks retain earlier GINE/radius-graph and historical FDE conventions where labelled. Use scripts for final results. The [freeze audit](doc/results/repository_freeze.md) is historical documentation of the earlier cleanup; normal training and analysis do not depend on it.
+`scripts/archive/run_radius_sweep.py` remains as the historical reproduction entry point for the [35 m selection](docs/results/radius_sweep_results.md); no new sweep is needed. Exploratory notebooks retain earlier GINE/radius-graph and historical FDE conventions where labelled. Use scripts for final results. The [freeze audit](docs/archive/repository_freeze.md) is historical documentation of the earlier cleanup; normal training and analysis do not depend on it.

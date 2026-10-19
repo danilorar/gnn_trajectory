@@ -1,7 +1,7 @@
-"""Show or save the six GRU predictions for one test sample.
+"""Show the six GRU predictions for one test sample, optionally saving a PNG.
 
 Example:
-    python tools/plot_qualitative_prediction.py --sample-index 6706 --show
+    python tools/plot_qualitative_prediction.py
 """
 
 import argparse
@@ -23,6 +23,7 @@ from utils.training_utils import read_manifest, set_seed
 
 DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
 CHECKPOINT = PROJECT_ROOT / "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth"
+SAMPLE_INDEX = 6800 # Change this to plot another test sample (zero-based index). (6706)
 
 
 # ========================================================
@@ -85,23 +86,19 @@ def plot_prediction(ax, sample, predictions, best_mode):
 
 
 # ========================================================
-# Load one sample, predict, and show or save its figure
+# Load one sample, predict, and show its figure
 # ========================================================
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sample-index", type=int, default=6706)
     parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT)
-    parser.add_argument("--output", type=Path, help="PNG path; default includes seed and sample index")
-    parser.add_argument("--show", action="store_true", help="Open a window instead of saving a PNG")
+    parser.add_argument("--output", type=Path, help="Optional PNG path; the plot is always shown")
     args = parser.parse_args()
 
     manifest = read_manifest(args.checkpoint)
     seed = manifest["seed"]
-    if not args.show:
-        if args.output is None:
-            args.output = PROJECT_ROOT / f"doc/figures/qualitative_gru_seed{seed}_sample{args.sample_index}.png"
+    if args.output:
         if args.output.suffix.lower() != ".png":
             parser.error("--output must be a PNG path")
         if args.output.exists():
@@ -109,9 +106,9 @@ def main():
 
     with DATASET.open("rb") as handle:
         samples = pickle.load(handle)
-    if not 0 <= args.sample_index < len(samples):
-        parser.error(f"--sample-index must be between 0 and {len(samples) - 1}")
-    sample = samples[args.sample_index]
+    if not 0 <= SAMPLE_INDEX < len(samples):
+        parser.error(f"SAMPLE_INDEX must be between 0 and {len(samples) - 1}")
+    sample = samples[SAMPLE_INDEX]
 
     set_seed(seed)
     model = GraphNetworkAttentionMultimodalWithMapGRU(num_modes=6)
@@ -136,28 +133,24 @@ def main():
     min_ade = ade_per_mode[best_ade_mode]
     min_fde = fde_per_mode[best_fde_mode]
 
-    import matplotlib
-    if not args.show:
-        matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(10, 9))
     plot_prediction(ax, sample, predictions, best_ade_mode)
     ax.set_title(
-        f"Sample {args.sample_index} — map-aware GRU, seed {seed}\n"
+        f"Sample {SAMPLE_INDEX} — map-aware GRU, seed {seed}\n"
         f"Best-mode ADE = {min_ade:.2f} m"
     )
     fig.tight_layout()
-    print(f"Sample {args.sample_index} | GRU seed {seed}")
+    print(f"Sample {SAMPLE_INDEX} | GRU seed {seed}")
     print(f"minADE6={min_ade:.6f} m (mode {best_ade_mode}); "
           f"minFDE6={min_fde:.6f} m (mode {best_fde_mode})")
 
-    if args.show:
-        plt.show()
-    else:
+    if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(args.output, dpi=180)
         print(f"Saved {args.output}")
+    plt.show()
     plt.close(fig)
 
 

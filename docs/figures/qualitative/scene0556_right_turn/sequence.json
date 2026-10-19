@@ -1,0 +1,470 @@
+{
+  "model": "GraphNetworkAttentionMultimodalWithMapGRU",
+  "checkpoint": "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth",
+  "dataset": "data/processed/nuscenes_test_prediction_samples_map.pkl",
+  "seed": 2026,
+  "scene_name": "scene-0556",
+  "scene_token": "b94fbf78579f4ff5ab5dbd897d5e3199",
+  "target_instance_token": "9927248e4c9f4804b9de3df200757285",
+  "selected_test_indices": [
+    2397,
+    2398,
+    2399,
+    2400,
+    2401,
+    2402,
+    2403,
+    2404,
+    2405,
+    2406
+  ],
+  "duration_observed_s": 4.401573,
+  "history_s": 2,
+  "forecast_s": 6,
+  "num_modes": 6,
+  "coordinate_frame": "Fixed at the initial target translation and heading; x forward, y left.",
+  "mode_selection": "Per-frame minimum ground-truth ADE across six modes (oracle); modes can change across frames.",
+  "candidate_selection": {
+    "criteria": "Ten consecutive car samples with 0.35\u20130.65 s gaps, map context, 8\u201345 m endpoint displacement at every frame, first endpoint angle 25\u2013110 degrees, and at least one angle >=40 degrees.",
+    "eligible_windows": 52,
+    "ranking": "Minimum mean minADE6 + 0.2 * maximum minADE6 + 0.1 * mean minFDE6; inspected previews for visual clarity.",
+    "representative_performance_claim": false
+  },
+  "mean_minADE6_over_selected_frames_m": 1.4333650588989257,
+  "mean_minFDE6_over_selected_frames_m": 2.296207942068577,
+  "playback": "Recorded intervals rounded for GIF timing; first/last frames held briefly. No interpolated positions or trajectories.",
+  "report_caption": "Qualitative rollout of the map-aware multimodal GATv2\u2013GRU model (seed 2026) for the same vehicle at three observation times in nuScenes scene-0556. All panels use a fixed coordinate frame anchored at the first target pose. Blue denotes the observed two-second history, green the recorded six-second future, and dashed red the lowest-ADE of six predicted trajectories; other modes are gray. The highlighted mode is selected using ground truth at each timestamp. This deliberately selected illustrative sequence is not a representative performance estimate. The target is labelled Target car; C1-C9 identify other cars, T1 a truck, and P1-P2 pedestrians, using dataset categories and persistent instance tokens. IDs remain consistent across frames; only agents present in the processed neighbor set are shown.",
+  "frames": [
+    {
+      "index": 2397,
+      "time_s": 0.0,
+      "sample_token": "22ab3af73df642b2ad319411f6622dd6",
+      "current_annotation_token": "2e97af202e8b4f1795b7048ef863ccb4",
+      "minADE6": 1.3243659734725952,
+      "minFDE6": 2.5658507347106934,
+      "best_mode": 1,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C2",
+        "C3",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1220.336,
+          957.951
+        ],
+        "yaw_rad": 0.6428805340057496
+      },
+      "timestamp_us": 1535729902046741
+    },
+    {
+      "index": 2398,
+      "time_s": 0.499874,
+      "sample_token": "e58ab79e465a42bea579a45e84f70552",
+      "current_annotation_token": "838ed80ff09d4817b4e8f914031547a2",
+      "minADE6": 0.8591329455375671,
+      "minFDE6": 1.5099822282791138,
+      "best_mode": 2,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C3",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1221.747,
+          958.736
+        ],
+        "yaw_rad": 0.5608134543796399
+      },
+      "timestamp_us": 1535729902546615
+    },
+    {
+      "index": 2399,
+      "time_s": 0.900216,
+      "sample_token": "37fbafbd569045729671449fa2e07c85",
+      "current_annotation_token": "b50c51560f434d6c8b27c0baeba78b4d",
+      "minADE6": 1.3687204122543335,
+      "minFDE6": 3.3286783695220947,
+      "best_mode": 3,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C3",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1222.494,
+          959.078
+        ],
+        "yaw_rad": 0.5474469713132402
+      },
+      "timestamp_us": 1535729902946957
+    },
+    {
+      "index": 2400,
+      "time_s": 1.400642,
+      "sample_token": "396ef2a64d3e49f69f59e1520c582462",
+      "current_annotation_token": "c0f7d6d253d44e37b3610ec50af8b531",
+      "minADE6": 2.1047203540802,
+      "minFDE6": 4.009483814239502,
+      "best_mode": 3,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C7",
+        "C3",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1223.501,
+          959.49
+        ],
+        "yaw_rad": 0.45610595624577943
+      },
+      "timestamp_us": 1535729903447383
+    },
+    {
+      "index": 2401,
+      "time_s": 1.851298,
+      "sample_token": "0c630e44d5b645a39cfdf15ae9a481aa",
+      "current_annotation_token": "58d853cbffe24772ad0732f6313fcab0",
+      "minADE6": 1.5641669034957886,
+      "minFDE6": 1.670933485031128,
+      "best_mode": 3,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C7",
+        "C3",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1224.528,
+          959.691
+        ],
+        "yaw_rad": 0.37384928595638295
+      },
+      "timestamp_us": 1535729903898039
+    },
+    {
+      "index": 2402,
+      "time_s": 2.35228,
+      "sample_token": "2b9bd7102b304eb68d3413df7f0f3462",
+      "current_annotation_token": "ec9d512967fc4096a68e37b931e3fee8",
+      "minADE6": 1.4137111902236938,
+      "minFDE6": 1.8961657285690308,
+      "best_mode": 2,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C7",
+        "C3",
+        "C8",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1226.048,
+          959.991
+        ],
+        "yaw_rad": 0.2217871297616132
+      },
+      "timestamp_us": 1535729904399021
+    },
+    {
+      "index": 2403,
+      "time_s": 2.852717,
+      "sample_token": "93323e6a660e4d85b3fa4f6a47aeb9a7",
+      "current_annotation_token": "077924e5f1e14631a8ae3f17b1374595",
+      "minADE6": 1.8870528936386108,
+      "minFDE6": 1.676665186882019,
+      "best_mode": 1,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C7",
+        "C3",
+        "C8",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1227.867,
+          959.958
+        ],
+        "yaw_rad": 0.0607465808976302
+      },
+      "timestamp_us": 1535729904899458
+    },
+    {
+      "index": 2404,
+      "time_s": 3.40303,
+      "sample_token": "5b790dd0fb6e4545bc7f3273aa178d4c",
+      "current_annotation_token": "464145e9053d4504acebb79987c6cf1d",
+      "minADE6": 0.8076819777488708,
+      "minFDE6": 0.18492795526981354,
+      "best_mode": 1,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C6",
+        "C2",
+        "C7",
+        "C3",
+        "C8",
+        "P1",
+        "C4",
+        "C5",
+        "P2"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1230.052,
+          959.444
+        ],
+        "yaw_rad": -0.20708948067745084
+      },
+      "timestamp_us": 1535729905449771
+    },
+    {
+      "index": 2405,
+      "time_s": 3.851919,
+      "sample_token": "2e5c6a6379a3467facbd9e6740cd7852",
+      "current_annotation_token": "ce1d4548d5e64c5782291f65ca43bbf3",
+      "minADE6": 1.4299739599227905,
+      "minFDE6": 2.8701021671295166,
+      "best_mode": 4,
+      "agents_present": [
+        "C1",
+        "T1",
+        "C9",
+        "C6",
+        "C7",
+        "C3",
+        "C8",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1231.901,
+          958.58
+        ],
+        "yaw_rad": -0.3828528894401402
+      },
+      "timestamp_us": 1535729905898660
+    },
+    {
+      "index": 2406,
+      "time_s": 4.401573,
+      "sample_token": "451419e30ed04ab189dcee83d85edaac",
+      "current_annotation_token": "8a65e19b8ab34f87afd6b95b199e90f6",
+      "minADE6": 1.5741239786148071,
+      "minFDE6": 3.2492897510528564,
+      "best_mode": 1,
+      "agents_present": [
+        "C1",
+        "C9",
+        "C7",
+        "C3",
+        "C8",
+        "P1",
+        "C4",
+        "C5"
+      ],
+      "target_pose": {
+        "global_xy": [
+          1234.213,
+          957.218
+        ],
+        "yaw_rad": -0.5066643237723785
+      },
+      "timestamp_us": 1535729906448314
+    }
+  ],
+  "agent_identification": {
+    "source": "target_category, neighbors_categories and neighbor_instance_tokens in the processed test samples",
+    "target": {
+      "label": "Target car",
+      "category": "vehicle.car",
+      "instance_token": "9927248e4c9f4804b9de3df200757285"
+    },
+    "neighbors": [
+      {
+        "id": "C1",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "4358bd2884ab4ffa94ffad23a664aea3"
+      },
+      {
+        "id": "T1",
+        "category": "vehicle.truck",
+        "type": "Truck",
+        "instance_token": "41c466dc7b324a2d996337dbc895a027"
+      },
+      {
+        "id": "C2",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "89f67b6367b94db6b1780ff0a4625538"
+      },
+      {
+        "id": "C3",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "76f9984c409a4d628dc6c48e8bf1fc9b"
+      },
+      {
+        "id": "P1",
+        "category": "human.pedestrian.adult",
+        "type": "Pedestrian",
+        "instance_token": "dcad23ef9c364e39b6c30958b428256b"
+      },
+      {
+        "id": "C4",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "c7344888131f45ad9eece37a5d41f8c9"
+      },
+      {
+        "id": "C5",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "4cc9faabd80045cc896a18bc8e0cf360"
+      },
+      {
+        "id": "C6",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "7c5f419bdf8f43e08c18ae1f77f56795"
+      },
+      {
+        "id": "C7",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "6edf2d226d1344268d0aed6fb6e75e22"
+      },
+      {
+        "id": "C8",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "a4a02c94cff246448d01116d1d4afef1"
+      },
+      {
+        "id": "P2",
+        "category": "human.pedestrian.adult",
+        "type": "Pedestrian",
+        "instance_token": "cebcadeadbc64f1c85bc005736ff8b76"
+      },
+      {
+        "id": "C9",
+        "category": "vehicle.car",
+        "type": "Car",
+        "instance_token": "bc1f4cd8ec9f4d96bf44a23c9fce868b"
+      }
+    ],
+    "distinct_neighbor_counts": {
+      "car": 9,
+      "truck": 1,
+      "pedestrian": 2
+    },
+    "labels": "C1-C9 are cars, T1 is a truck, P1-P2 are adult pedestrians; these are figure IDs, not dataset token values.",
+    "visibility": "All processed neighbor positions are inside the fixed view. Agents are displayed only when present in the processed neighbor set."
+  },
+  "frame_poses_source": "Original nuScenes v1.0-trainval sample_annotation.json (target translation/rotation) and sample.json (timestamp). Cached here so figure reproduction does not need raw metadata files.",
+  "figure": {
+    "id": "Q1",
+    "title": "GRU forecasts through a right turn",
+    "output_stem": "sequence",
+    "panel_indices": [
+      0,
+      4,
+      9
+    ],
+    "label_offsets": {
+      "C1": [
+        6,
+        5
+      ],
+      "C2": [
+        -22,
+        10
+      ],
+      "C3": [
+        6,
+        -13
+      ],
+      "C4": [
+        6,
+        10
+      ],
+      "C5": [
+        -5,
+        -14
+      ],
+      "C6": [
+        -23,
+        -10
+      ],
+      "C7": [
+        -5,
+        -17
+      ],
+      "C8": [
+        6,
+        10
+      ],
+      "C9": [
+        6,
+        5
+      ],
+      "T1": [
+        9,
+        -8
+      ],
+      "P1": [
+        -20,
+        6
+      ],
+      "P2": [
+        7,
+        -14
+      ]
+    },
+    "interpretation": "Curated right-turn example with relatively close oracle-best forecasts across the sequence. Not a representative performance estimate."
+  }
+}
