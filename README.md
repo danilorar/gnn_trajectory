@@ -78,6 +78,14 @@ Evaluation-only mode never trains or saves weights. It infers the seed from the 
 
 The interaction analysis compares the verified seed-42 target-only MLP and deterministic GATv2 checkpoints, grouped by neighbor count and nearest-neighbor distance. Positive `MLP ADE − GAT ADE` means GAT performs better; it does not establish a causal effect of neighbors.
 
+For a qualitative view of the final GRU on test sample 6706, including all six modes:
+
+```bash
+python tools/plot_qualitative_prediction.py --sample-index 6706 --show
+```
+
+`--show` opens a desktop plot without writing files. To save a new plot and checkpoint/data provenance JSON, omit `--show` and supply an unused `--output /path/to/new.png`. The tool verifies the checkpoint and dataset hashes against the final matched experiment. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
+
 ## Repository layout
 
 ```text

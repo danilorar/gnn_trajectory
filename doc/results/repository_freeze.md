@@ -144,3 +144,9 @@ The list includes tracked deletions and local generated artifacts removed after 
 - `scripts/train_gru_decoder.py`
 - `tools/plot_qualitative_prediction.py`
 - `utils/gru_future_decoder.py`
+
+## Subsequent qualitative visualization
+
+After the freeze, a user-requested plot for test sample 6706 was added using the validated 60-epoch GRU seed-2026 checkpoint (best epoch 53). The new `tools/plot_qualitative_prediction.py` verifies checkpoint and dataset hashes against the canonical comparison and saves a PNG plus per-mode metrics/coordinates and provenance JSON. The saved figure is `doc/figures/qualitative_gru_seed2026_sample6706.png`; minADE6 is 4.376181 m and independent minFDE6 is 12.432691 m. It shows all six modes and highlights the ADE-best mode. The turn is partially represented but its final position is still substantially wrong.
+
+This is a valid final-model visualization, distinct from the retired tool/figure based on the overwritten seed-42 checkpoint. The retirement list above refers to that earlier implementation. The sample index was specified by the user, not selected by performance. The canonical aggregate artifacts, model behavior, weights and datasets remain unchanged. The README documents the current qualitative command; `--show` displays without saving files.
