@@ -23,7 +23,7 @@ from utils.models import (
     GraphNetworkAttentionMultimodalWithMap,
     GraphNetworkAttentionMultimodalWithMapGRU,
 )
-from utils.training_utils import read_manifest, set_seed
+from utils.training_utils import multimodal_metrics, read_manifest, set_seed
 
 DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
 LABELS = ("0-15 deg", "15-30 deg", "30-60 deg", "60+ deg")
@@ -33,14 +33,6 @@ def endpoint_geometry(future):
     """Return final displacement in metres and absolute endpoint angle in degrees."""
     x, y = np.asarray(future, dtype=np.float64)[-1]
     return float(np.hypot(x, y)), float(abs(np.degrees(np.arctan2(y, x))))
-
-
-def per_sample_metrics(predictions, targets):
-    """Independently select the ADE-best and FDE-best of six trajectories."""
-    if predictions.shape != (targets.shape[0], 6, 12, 2):
-        raise ValueError(f"Unexpected prediction shape: {predictions.shape}")
-    errors = torch.linalg.vector_norm(predictions - targets[:, None], dim=-1)
-    return errors.mean(-1).min(-1).values, errors[:, :, -1].min(-1).values
 
 
 def summarize(ades, fdes):
@@ -151,7 +143,7 @@ def main():
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            ade, fde = per_sample_metrics(model(batch), batch.y.reshape(-1, 12, 2))
+            ade, fde = multimodal_metrics(model(batch), batch.y.reshape(-1, 12, 2))
             ades.extend(ade.cpu().tolist())
             fdes.extend(fde.cpu().tolist())
     ades = np.asarray(ades)

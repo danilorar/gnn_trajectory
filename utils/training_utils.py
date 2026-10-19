@@ -181,6 +181,23 @@ def best_of_k_ade_loss(pred, target):
     return errors.mean(dim=-1).min(dim=-1).values.mean()
 
 
+def multimodal_metrics(predictions, targets):
+    """Return per-sample minADE and minFDE, choosing modes independently.
+
+    predictions: [B, K, 12, 2]; targets: [B, 12, 2].
+    Each returned tensor has shape [B]. For K=6 these are minADE6/minFDE6.
+    """
+    if predictions.ndim != 4 or predictions.shape[1] < 1 or predictions.shape[2:] != (12, 2):
+        raise ValueError("Expected predictions with shape [B, K, 12, 2], K >= 1")
+    if targets.shape != (predictions.shape[0], 12, 2):
+        raise ValueError("Expected targets with shape [B, 12, 2]")
+
+    errors = torch.norm(predictions - targets[:, None], dim=-1)
+    min_ade = errors.mean(dim=-1).min(dim=-1).values
+    min_fde = errors[:, :, -1].min(dim=-1).values
+    return min_ade, min_fde
+
+
 def evaluate_multimodal_model(model, loader, device=None):
     """Return mean minADE and minFDE, minimized independently over modes.
 
@@ -198,10 +215,10 @@ def evaluate_multimodal_model(model, loader, device=None):
         for batch in loader:
             batch = batch.to(device)
             pred = model(batch)
-            target = batch.y.reshape(batch.num_graphs, 1, 12, 2)
-            errors = torch.norm(pred - target, dim=-1)
-            ade_list.extend(errors.mean(dim=-1).min(dim=-1).values.cpu().numpy())
-            fde_list.extend(errors[:, :, -1].min(dim=-1).values.cpu().numpy())
+            target = batch.y.reshape(batch.num_graphs, 12, 2)
+            min_ade, min_fde = multimodal_metrics(pred, target)
+            ade_list.extend(min_ade.cpu().numpy())
+            fde_list.extend(min_fde.cpu().numpy())
 
     if not ade_list:
         raise ValueError("Evaluation loader is empty")

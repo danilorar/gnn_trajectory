@@ -38,7 +38,7 @@ from utils.training_utils import (
     set_seed,
     save_run_manifest,
 )
-from utils.analysis_utils import evaluate_by_density
+from scripts.archive.analysis_utils import evaluate_by_density
 from utils.graph_utils import remove_neighbors
 from torch_geometric.data import Batch
 

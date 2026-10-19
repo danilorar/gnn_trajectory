@@ -82,15 +82,15 @@ For a qualitative view of the final GRU on test sample 6706, including all six m
 python tools/plot_qualitative_prediction.py --sample-index 6706 --show
 ```
 
-`--show` opens a desktop plot without writing files. To save a new plot and prediction JSON, omit `--show` and supply an unused `--output /path/to/new.png`. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
+`--show` opens a desktop plot without writing files. To save a new PNG plot, omit `--show` and supply an unused `--output /path/to/new.png`. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
 
 ## Repository layout
 
 ```text
 scripts/     build_processed_dataset.py, train_model.py, run_interaction_analysis.py,
              run_turn_angle_analysis.py
-scripts/archive/ historical radius sweep (not part of the final workflow)
-utils/       models.py, graph_utils.py, training_utils.py, analysis_utils.py
+scripts/archive/ historical radius sweep and notebook analysis helpers
+utils/       models.py, graph_utils.py, training_utils.py
 notebooks/   retained exploratory/teaching history; generated outputs cleared
 tools/       camera and processed-sample inspection helpers
 doc/results/ canonical decoder comparison, diagnostic summary and freeze audit
