@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .vscode/
 checkpoints/
+# Generated experiment/final weights, manifests, histories and logs stay local.
+checkpoints_*/
+data/processed/*_map.pkl
 
 # Not data 
 data/maps/ 

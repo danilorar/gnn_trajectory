@@ -65,13 +65,13 @@ def evaluate_by_density(model, dataset, graphs, device=None):
 
     return summary
 
-# ========================================================    
+# ========================================================
 
 def evaluate_neighbor_without_neighbors(model, graphs,device=None):
     """
     Evaluate the model after removing all neighbor nodes.
     """
-    
+
     if device is None:
         device = next(model.parameters()).device
 
@@ -102,9 +102,9 @@ def evaluate_neighbor_without_neighbors(model, graphs,device=None):
         np.mean(ade_list),
         np.mean(fde_list)
     )
-    
-# ========================================================    
-    
+
+# ========================================================
+
 def neighbor_effect_by_count(
     model,
     dataset,
@@ -119,10 +119,10 @@ def neighbor_effect_by_count(
         neighbor_counts
         delta_ades
 
-    delta_ADE = normal ADE - ablated ADE
+    delta_ADE = ablated ADE - normal ADE
 
-    Negative -> neighbors help
-    Positive -> neighbors hurt
+    Positive -> neighbors help
+    Negative -> neighbors hurt
     """
 
     if device is None:
@@ -187,8 +187,9 @@ def neighbor_effect_by_count(
                 ablated_errors.mean().item()
             )
 
+            # Positive means removing neighbors increased error.
             delta_ade = (
-                normal_ade - ablated_ade
+                ablated_ade - normal_ade
             )
 
             neighbor_counts.append(
@@ -201,7 +202,7 @@ def neighbor_effect_by_count(
 
     return neighbor_counts, delta_ades
 
-# ======================================================== 
+# ========================================================
 
 def bin_neighbor_effect(
     neighbor_counts,
@@ -210,19 +211,16 @@ def bin_neighbor_effect(
     """
     Group delta ADE values by neighbor-count ranges.
 
-    delta_ADE = normal ADE - ablated ADE
+    delta_ADE = ablated ADE - normal ADE
 
-    Negative -> neighbors help
-    Positive -> neighbors hurt
+    Positive -> neighbors help
+    Negative -> neighbors hurt
     """
 
     bins = {
-        "0-4": [],
-        "5-9": [],
-        "10-19": [],
-        "20-29": [],
-        "30-39": [],
-        "40+": [],
+        "0-1": [],
+        "2-4": [],
+        "5+": [],
     }
 
     for n_neighbors, delta_ade in zip(
@@ -230,23 +228,14 @@ def bin_neighbor_effect(
         delta_ades
     ):
 
-        if n_neighbors <= 4:
-            bins["0-4"].append(delta_ade)
+        if n_neighbors <= 1:
+            bins["0-1"].append(delta_ade)
 
-        elif n_neighbors <= 9:
-            bins["5-9"].append(delta_ade)
-
-        elif n_neighbors <= 19:
-            bins["10-19"].append(delta_ade)
-
-        elif n_neighbors <= 29:
-            bins["20-29"].append(delta_ade)
-
-        elif n_neighbors <= 39:
-            bins["30-39"].append(delta_ade)
+        elif n_neighbors <= 4:
+            bins["2-4"].append(delta_ade)
 
         else:
-            bins["40+"].append(delta_ade)
+            bins["5+"].append(delta_ade)
 
     summary = {}
 
@@ -254,6 +243,7 @@ def bin_neighbor_effect(
 
         summary[bin_name] = {
             "mean_delta_ade": np.mean(values),
+            "std_delta_ade": np.std(values),
             "n": len(values),
         }
 
@@ -268,8 +258,8 @@ def neighbor_effect_by_distance(
     device=None
 ):
     """
-    Compare normal-model ADE against ablated-model ADE for every
-    sample that has at least one neighbor, paired with the distance
+    Legacy radius-sweep convention: normal ADE minus ablated ADE.
+    Compare every sample that has a neighbor, paired with the distance
     to that sample's nearest neighbor.
 
     Returns:

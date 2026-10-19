@@ -15,7 +15,7 @@
 1. Start up a terminal (On Windows, use Powershell)
 1. Clone the project GitHub repo, by the following command (this creates a folder in your current directory with the necessary files for the next instructions): `git clone https://github.com/danilorar/gnn_trajectory.git`
 
-**Note:** The notebooks locate the data through the path `~/Desktop/gnn_trajectory/data`. Either run the clone command above from your `Desktop` folder, or change the `DATA_DIR` variable at the top of each notebook to match where you cloned the repo.
+**Note:** Scripts resolve the project root from their file location. The retained notebooks are exploratory history; start Jupyter from the repository root and check each notebook's setup cell. Use the commands in the README for the final training/evaluation pipeline.
 
 ## Keeping the repo in sync
 Cloning a repo creates a local copy of the Github repo on your computer. Whenever new changes are uploaded, or *pushed*,
@@ -44,7 +44,7 @@ To avoid this, *commit* (or `git stash`) your local changes before pulling, and 
    ```
    . It should print the installed versions without any errors.
 1. Now you can start using Jupyter notebook. To do so, type `jupyter notebook`. Your web browser should automatically open up and navigate to http://localhost:8888, letting you access Jupyter.
-1. The notebooks are available in the folder [`notebooks`](../notebooks), and are meant to be read in the order they are numbered. The preprocessed datasets are already included in `data/processed`, so `02_dataset_analysis.ipynb` and the modelling part of `03_baselines.ipynb` can be run without downloading nuScenes. The raw nuScenes data (placed in the `data` folder) is only needed for `01_nuscenes_investigate.ipynb`, the camera visualization cells of `03_baselines.ipynb` and the scripts in [`scripts`](../scripts).
+1. The notebooks in [`notebooks`](../notebooks) can be read in numbered order as exploratory history. Existing non-map samples are in `data/processed`; generated map-aware samples and trained checkpoints are local artifacts. Raw nuScenes metadata/maps are needed to rebuild datasets, and camera visualization additionally needs images. Training/evaluation scripts use processed samples and do not require raw sensor images. See the README for the final commands and data layout.
 1. To deactivate the conda environment, you simply type `conda deactivate`.
 
 ### Update the Conda environment

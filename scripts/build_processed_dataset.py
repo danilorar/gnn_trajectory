@@ -259,7 +259,7 @@ def get_map_lanes_for_sample(
     sample_record, 
     origin,
     yaw, 
-    map_radius=50.0 # TODO: Hardcoded for now, but could be made a parameter
+    map_radius=50.0 # Fixed lane-centerline context radius of the finalized datasets.
 ): 
     """
     Find nearby lane centerlines for one prediction sample

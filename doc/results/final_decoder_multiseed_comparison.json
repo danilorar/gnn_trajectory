@@ -1,0 +1,1415 @@
+{
+  "seeds": [
+    42,
+    123,
+    2026
+  ],
+  "num_epochs": 60,
+  "std_ddof": 0,
+  "baseline_code_reference": "631c7d4e1ad2fcda37d57570989b630541af874a",
+  "improvement_definition": "MLP minus GRU; positive means GRU improves",
+  "dataset_sha256": {
+    "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+    "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+    "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+  },
+  "runs": {
+    "mlp": {
+      "42": {
+        "manifest": {
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed42_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map",
+          "model_class": "GraphNetworkAttentionMultimodalWithMap",
+          "seed": 42,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 56,
+          "best_val_loss": 1.585936345016234,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5859363079071045,
+            "minFDE6": 3.3313441276550293
+          },
+          "test_metrics": {
+            "minADE6": 1.5354605913162231,
+            "minFDE6": 3.1098685264587402
+          },
+          "decoder": {
+            "type": "Original one-shot MLP",
+            "context_dim": 96,
+            "hidden_dim": 128,
+            "output": "6 x 12 x 2 absolute positions",
+            "teacher_forcing": false
+          },
+          "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+          "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "baseline_reference_seed": 2026,
+          "dataset_sha256": {
+            "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+            "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+            "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+          },
+          "protected_source_sha256": {
+            "utils/models.py": "90486c6436bafef95cb84f7eb561badfe82c10250b00e72890bdb9c1e95f3fa5",
+            "utils/graph_utils.py": "ea5e5f08155bf886b2fa3a5de9032a0f151133f433f43b33cf0aae33d77287d5",
+            "utils/training_utils.py": "802b003f67d55cc1acdeea6cf70ec38b0b474251ad66fc20cb5a595de0fd3ab6"
+          },
+          "parameter_counts": {
+            "baseline_decoder": 30992,
+            "mlp_decoder": 30992,
+            "mlp_total": 50448
+          },
+          "smoke_test": false
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed42_60ep.json",
+        "checkpoint_sha256": "14c0c25aca15bfbef9484fd1e0c7b0956e91d1b9ddd36fb216f96e78d252a2d0",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5859363079071045,
+            "minFDE6": 3.3313441276550293
+          },
+          "test": {
+            "minADE6": 1.5354605913162231,
+            "minFDE6": 3.1098685264587402
+          }
+        },
+        "training_dataset_hashes_recorded": true,
+        "sampling_recorded": true,
+        "training_history_verified": true,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMap",
+          "seed": 42,
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed42_best.pth",
+          "checkpoint_sha256": "14c0c25aca15bfbef9484fd1e0c7b0956e91d1b9ddd36fb216f96e78d252a2d0",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.5354605501909113,
+              "median": 1.2131682634353638,
+              "std": 1.2250612864373656
+            },
+            "minFDE6": {
+              "mean": 3.109868557577157,
+              "median": 2.3378344774246216,
+              "std": 2.9612646983115027
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.5532091056720134,
+              "median": 1.226634442806244,
+              "std": 1.2302568940758023
+            },
+            "minFDE6": {
+              "mean": 3.15758683151435,
+              "median": 2.3752851486206055,
+              "std": 2.979814542675909
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.3279206365673537,
+                "median": 1.1320265531539917,
+                "std": 0.9013173313757277
+              },
+              "minFDE6": {
+                "mean": 2.548925418876562,
+                "median": 2.1570942401885986,
+                "std": 1.9358943998454832
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.3707330883175057,
+                "median": 2.095154047012329,
+                "std": 1.2167789188227658
+              },
+              "minFDE6": {
+                "mean": 5.623934543097582,
+                "median": 4.941007614135742,
+                "std": 3.520540306026774
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 3.1793534691525758,
+                "median": 2.482119560241699,
+                "std": 2.1132519654268442
+              },
+              "minFDE6": {
+                "mean": 7.395169187379017,
+                "median": 5.816355228424072,
+                "std": 5.4165879844388005
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.5859612144272903,
+                "median": 2.982658624649048,
+                "std": 2.2950141163430176
+              },
+              "minFDE6": {
+                "mean": 8.477260058638693,
+                "median": 7.286688327789307,
+                "std": 5.683726322713671
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_60ep/multimodal_map_seed42_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.5354605913162231,
+              "minFDE6": 3.1098685264587402
+            },
+            "full_test_minus_manifest": {
+              "minADE6": -4.1125311822654e-08,
+              "minFDE6": 3.111841673231197e-08
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      },
+      "123": {
+        "manifest": {
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed123_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map",
+          "model_class": "GraphNetworkAttentionMultimodalWithMap",
+          "seed": 123,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 51,
+          "best_val_loss": 1.5735832817802344,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5735832452774048,
+            "minFDE6": 3.311277389526367
+          },
+          "test_metrics": {
+            "minADE6": 1.5344208478927612,
+            "minFDE6": 3.137701988220215
+          },
+          "decoder": {
+            "type": "Original one-shot MLP",
+            "context_dim": 96,
+            "hidden_dim": 128,
+            "output": "6 x 12 x 2 absolute positions",
+            "teacher_forcing": false
+          },
+          "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+          "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "baseline_reference_seed": 2026,
+          "dataset_sha256": {
+            "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+            "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+            "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+          },
+          "protected_source_sha256": {
+            "utils/models.py": "90486c6436bafef95cb84f7eb561badfe82c10250b00e72890bdb9c1e95f3fa5",
+            "utils/graph_utils.py": "ea5e5f08155bf886b2fa3a5de9032a0f151133f433f43b33cf0aae33d77287d5",
+            "utils/training_utils.py": "802b003f67d55cc1acdeea6cf70ec38b0b474251ad66fc20cb5a595de0fd3ab6"
+          },
+          "parameter_counts": {
+            "baseline_decoder": 30992,
+            "mlp_decoder": 30992,
+            "mlp_total": 50448
+          },
+          "smoke_test": false
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed123_60ep.json",
+        "checkpoint_sha256": "739051f643d56ef50a10070ee3fe4e9a852339476643c8a3ca5fb7d60b08f5ef",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5735832452774048,
+            "minFDE6": 3.311276912689209
+          },
+          "test": {
+            "minADE6": 1.5344208478927612,
+            "minFDE6": 3.137702226638794
+          }
+        },
+        "training_dataset_hashes_recorded": true,
+        "sampling_recorded": true,
+        "training_history_verified": true,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMap",
+          "seed": 123,
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed123_best.pth",
+          "checkpoint_sha256": "739051f643d56ef50a10070ee3fe4e9a852339476643c8a3ca5fb7d60b08f5ef",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.5344207903097113,
+              "median": 1.258842408657074,
+              "std": 1.1579383741163025
+            },
+            "minFDE6": {
+              "mean": 3.1377023116152274,
+              "median": 2.4687976837158203,
+              "std": 2.8224575397963525
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.5530585181646914,
+              "median": 1.2730973362922668,
+              "std": 1.162473159210061
+            },
+            "minFDE6": {
+              "mean": 3.184725692328108,
+              "median": 2.50942862033844,
+              "std": 2.84057896716576
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.3498725329313275,
+                "median": 1.1773158311843872,
+                "std": 0.8575145817411176
+              },
+              "minFDE6": {
+                "mean": 2.6327266960084064,
+                "median": 2.294750928878784,
+                "std": 1.8782954388298099
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.2581929702927748,
+                "median": 1.9684076309204102,
+                "std": 1.2226426903249736
+              },
+              "minFDE6": {
+                "mean": 5.320712972891926,
+                "median": 4.507439136505127,
+                "std": 3.5422276448499757
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 2.9538186327571725,
+                "median": 2.557193875312805,
+                "std": 1.8693098534783568
+              },
+              "minFDE6": {
+                "mean": 6.8944780416926195,
+                "median": 5.569075345993042,
+                "std": 4.71866388830197
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.9314938701432327,
+                "median": 3.5422661304473877,
+                "std": 2.7337436424975823
+              },
+              "minFDE6": {
+                "mean": 9.26885267372789,
+                "median": 8.215900421142578,
+                "std": 7.284933021352409
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_60ep/multimodal_map_seed123_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.5344208478927612,
+              "minFDE6": 3.137701988220215
+            },
+            "full_test_minus_manifest": {
+              "minADE6": -5.7583049883902504e-08,
+              "minFDE6": 3.2339501254696756e-07
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      },
+      "2026": {
+        "manifest": {
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed2026_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map",
+          "seed": 2026,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 59,
+          "best_val_loss": 1.5852668530386422,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5852668285369873,
+            "minFDE6": 3.3757715225219727
+          },
+          "test_metrics": {
+            "minADE6": 1.5277539491653442,
+            "minFDE6": 3.1155409812927246
+          }
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed2026_60ep.json",
+        "checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5852668285369873,
+            "minFDE6": 3.3757715225219727
+          },
+          "test": {
+            "minADE6": 1.5277539491653442,
+            "minFDE6": 3.1155409812927246
+          }
+        },
+        "training_dataset_hashes_recorded": false,
+        "sampling_recorded": false,
+        "training_history_verified": false,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMap",
+          "seed": 2026,
+          "checkpoint": "checkpoints_60ep/multimodal_map_seed2026_best.pth",
+          "checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.5277539719862194,
+              "median": 1.218944787979126,
+              "std": 1.2012123884414416
+            },
+            "minFDE6": {
+              "mean": 3.115541103809354,
+              "median": 2.30480694770813,
+              "std": 3.0672283193237635
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.5445323264001443,
+              "median": 1.2339380383491516,
+              "std": 1.2065089317955648
+            },
+            "minFDE6": {
+              "mean": 3.163904783819539,
+              "median": 2.345711350440979,
+              "std": 3.0897592225457045
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.31538915327323,
+                "median": 1.1383720636367798,
+                "std": 0.8529325532553071
+              },
+              "minFDE6": {
+                "mean": 2.5093934850681268,
+                "median": 2.120234251022339,
+                "std": 1.8953749466776153
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.395071717384919,
+                "median": 2.1479575634002686,
+                "std": 1.220208474776914
+              },
+              "minFDE6": {
+                "mean": 5.864169846134861,
+                "median": 4.891533851623535,
+                "std": 3.619163702038952
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 3.1306483196408563,
+                "median": 2.5710322856903076,
+                "std": 2.034303174301785
+              },
+              "minFDE6": {
+                "mean": 7.6080390316040045,
+                "median": 5.904394149780273,
+                "std": 5.5970339582913216
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.9452075012798966,
+                "median": 3.444209098815918,
+                "std": 2.690560881097127
+              },
+              "minFDE6": {
+                "mean": 9.365035404761633,
+                "median": 8.456987380981445,
+                "std": 7.154109203039562
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_60ep/multimodal_map_seed2026_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.5277539491653442,
+              "minFDE6": 3.1155409812927246
+            },
+            "full_test_minus_manifest": {
+              "minADE6": 2.2820875189566436e-08,
+              "minFDE6": 1.2251662928619567e-07
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      }
+    },
+    "gru": {
+      "42": {
+        "manifest": {
+          "checkpoint": "checkpoints_gru_decoder/seed42/multimodal_map_gru_seed42_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map_gru",
+          "seed": 42,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 59,
+          "best_val_loss": 1.529003931554111,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5290038585662842,
+            "minFDE6": 3.110682249069214
+          },
+          "test_metrics": {
+            "minADE6": 1.4918110370635986,
+            "minFDE6": 2.978482723236084
+          },
+          "decoder": {
+            "mode_embedding_dim": 16,
+            "hidden_dim": 64,
+            "layers": 1,
+            "steps": 12,
+            "input": "previous predicted displacement, initially zero",
+            "h0": "tanh(linear(fused context concatenated with learned mode embedding))",
+            "output": "cumulative sum of predicted xy displacements",
+            "teacher_forcing": false
+          },
+          "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+          "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "baseline_reference_seed": 2026,
+          "dataset_sha256": {
+            "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+            "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+            "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+          },
+          "protected_source_sha256": {
+            "utils/models.py": "90486c6436bafef95cb84f7eb561badfe82c10250b00e72890bdb9c1e95f3fa5",
+            "utils/graph_utils.py": "ea5e5f08155bf886b2fa3a5de9032a0f151133f433f43b33cf0aae33d77287d5",
+            "utils/training_utils.py": "802b003f67d55cc1acdeea6cf70ec38b0b474251ad66fc20cb5a595de0fd3ab6"
+          },
+          "parameter_counts": {
+            "baseline_decoder": 30992,
+            "gru_decoder": 20514,
+            "gru_total": 39970
+          },
+          "smoke_test": false
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed42_gru_decoder.json",
+        "checkpoint_sha256": "503d7cc0549d62f96580345476bd60a84b6ab64e4b9ebb5f5cdf1a65c07a6d80",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5290038585662842,
+            "minFDE6": 3.110682249069214
+          },
+          "test": {
+            "minADE6": 1.4918110370635986,
+            "minFDE6": 2.978482723236084
+          }
+        },
+        "training_dataset_hashes_recorded": true,
+        "sampling_recorded": true,
+        "training_history_verified": true,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMapGRU",
+          "seed": 42,
+          "checkpoint": "checkpoints_gru_decoder/seed42/multimodal_map_gru_seed42_best.pth",
+          "checkpoint_sha256": "503d7cc0549d62f96580345476bd60a84b6ab64e4b9ebb5f5cdf1a65c07a6d80",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.491810964039267,
+              "median": 1.2035428285598755,
+              "std": 1.1850768116025763
+            },
+            "minFDE6": {
+              "mean": 2.978482818914368,
+              "median": 2.23447322845459,
+              "std": 2.966091865340648
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.51371749878197,
+              "median": 1.217866599559784,
+              "std": 1.1888815679765303
+            },
+            "minFDE6": {
+              "mean": 3.0322105374729795,
+              "median": 2.281887412071228,
+              "std": 2.983937447263782
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.3146947949112688,
+                "median": 1.1300774812698364,
+                "std": 0.8697070185953202
+              },
+              "minFDE6": {
+                "mean": 2.494874505957447,
+                "median": 2.0815086364746094,
+                "std": 1.9817208659444192
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.3359638527622373,
+                "median": 2.0612542629241943,
+                "std": 1.2923033917651452
+              },
+              "minFDE6": {
+                "mean": 5.760563332030154,
+                "median": 4.889371395111084,
+                "std": 3.7876618276048464
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 2.852361216527246,
+                "median": 2.185964822769165,
+                "std": 2.077196410230398
+              },
+              "minFDE6": {
+                "mean": 6.340053950077139,
+                "median": 4.5026328563690186,
+                "std": 5.57762214136728
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.472374011045215,
+                "median": 2.6992835998535156,
+                "std": 2.724644064328341
+              },
+              "minFDE6": {
+                "mean": 7.974127603330832,
+                "median": 6.528728485107422,
+                "std": 7.005717867447777
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_gru_decoder/seed42/multimodal_map_gru_seed42_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.4918110370635986,
+              "minFDE6": 2.978482723236084
+            },
+            "full_test_minus_manifest": {
+              "minADE6": -7.302433169265043e-08,
+              "minFDE6": 9.567828396228606e-08
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      },
+      "123": {
+        "manifest": {
+          "checkpoint": "checkpoints_gru_decoder/seed123/multimodal_map_gru_seed123_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map_gru",
+          "seed": 123,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 51,
+          "best_val_loss": 1.5347085921908816,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5347084999084473,
+            "minFDE6": 3.130821704864502
+          },
+          "test_metrics": {
+            "minADE6": 1.4777199029922485,
+            "minFDE6": 2.9421443939208984
+          },
+          "decoder": {
+            "mode_embedding_dim": 16,
+            "hidden_dim": 64,
+            "layers": 1,
+            "steps": 12,
+            "input": "previous predicted displacement, initially zero",
+            "h0": "tanh(linear(fused context concatenated with learned mode embedding))",
+            "output": "cumulative sum of predicted xy displacements",
+            "teacher_forcing": false
+          },
+          "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+          "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "baseline_reference_seed": 2026,
+          "dataset_sha256": {
+            "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+            "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+            "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+          },
+          "protected_source_sha256": {
+            "utils/models.py": "90486c6436bafef95cb84f7eb561badfe82c10250b00e72890bdb9c1e95f3fa5",
+            "utils/graph_utils.py": "ea5e5f08155bf886b2fa3a5de9032a0f151133f433f43b33cf0aae33d77287d5",
+            "utils/training_utils.py": "802b003f67d55cc1acdeea6cf70ec38b0b474251ad66fc20cb5a595de0fd3ab6"
+          },
+          "parameter_counts": {
+            "baseline_decoder": 30992,
+            "gru_decoder": 20514,
+            "gru_total": 39970
+          },
+          "smoke_test": false
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed123_gru_decoder.json",
+        "checkpoint_sha256": "c57830f0d76a8ef18c3fe41e72acae4f5cdadae788e0259cd48e1be2fcfca304",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5347084999084473,
+            "minFDE6": 3.130821704864502
+          },
+          "test": {
+            "minADE6": 1.4777199029922485,
+            "minFDE6": 2.9421441555023193
+          }
+        },
+        "training_dataset_hashes_recorded": true,
+        "sampling_recorded": true,
+        "training_history_verified": true,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMapGRU",
+          "seed": 123,
+          "checkpoint": "checkpoints_gru_decoder/seed123/multimodal_map_gru_seed123_best.pth",
+          "checkpoint_sha256": "c57830f0d76a8ef18c3fe41e72acae4f5cdadae788e0259cd48e1be2fcfca304",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.477719871640551,
+              "median": 1.1784688234329224,
+              "std": 1.1970901433217436
+            },
+            "minFDE6": {
+              "mean": 2.9421442714006685,
+              "median": 2.1853013038635254,
+              "std": 2.940462782426204
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.4986640524781036,
+              "median": 1.1968113780021667,
+              "std": 1.2018698746888068
+            },
+            "minFDE6": {
+              "mean": 2.993829637738836,
+              "median": 2.2269033193588257,
+              "std": 2.9595479181591258
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.3128063205873322,
+                "median": 1.1115384101867676,
+                "std": 0.8983747887088974
+              },
+              "minFDE6": {
+                "mean": 2.497689303342279,
+                "median": 2.0581706762313843,
+                "std": 2.002666546452809
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.308857217704843,
+                "median": 1.9661941528320312,
+                "std": 1.2793734383373054
+              },
+              "minFDE6": {
+                "mean": 5.5467005812335675,
+                "median": 4.682389259338379,
+                "std": 3.7284561007101487
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 2.68883058473412,
+                "median": 1.9053272604942322,
+                "std": 2.1641330429126433
+              },
+              "minFDE6": {
+                "mean": 5.932601927566841,
+                "median": 3.9066473245620728,
+                "std": 5.688413597475651
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.510189768226667,
+                "median": 2.6393630504608154,
+                "std": 2.6146142623413273
+              },
+              "minFDE6": {
+                "mean": 8.11806942505398,
+                "median": 6.293520450592041,
+                "std": 6.723727090952713
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_gru_decoder/seed123/multimodal_map_gru_seed123_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.4777199029922485,
+              "minFDE6": 2.9421443939208984
+            },
+            "full_test_minus_manifest": {
+              "minADE6": -3.1351697460380024e-08,
+              "minFDE6": -1.2252022996150913e-07
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      },
+      "2026": {
+        "manifest": {
+          "checkpoint": "/home/danilo/Desktop/gnn_trajectory/checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth",
+          "torch_version": "2.14.1+cu130",
+          "torch_geometric_version": "2.8.0.post1",
+          "model": "multimodal_map_gru",
+          "seed": 2026,
+          "radius": 35,
+          "num_modes": 6,
+          "num_epochs": 60,
+          "best_epoch": 53,
+          "best_val_loss": 1.5087285516595519,
+          "batch_size": 64,
+          "lr": 0.001,
+          "device": "cuda",
+          "validation_metrics": {
+            "minADE6": 1.5087283849716187,
+            "minFDE6": 3.045300006866455
+          },
+          "test_metrics": {
+            "minADE6": 1.4529227018356323,
+            "minFDE6": 2.872185707092285
+          },
+          "decoder": {
+            "mode_embedding_dim": 16,
+            "hidden_dim": 64,
+            "layers": 1,
+            "steps": 12,
+            "input": "previous predicted displacement, initially zero",
+            "h0": "tanh(linear(fused context concatenated with learned mode embedding))",
+            "output": "cumulative sum of predicted xy displacements",
+            "teacher_forcing": false
+          },
+          "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+          "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+          "dataset_sha256": {
+            "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+            "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+            "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+          },
+          "protected_source_sha256": {
+            "utils/models.py": "90486c6436bafef95cb84f7eb561badfe82c10250b00e72890bdb9c1e95f3fa5",
+            "utils/graph_utils.py": "ea5e5f08155bf886b2fa3a5de9032a0f151133f433f43b33cf0aae33d77287d5",
+            "utils/training_utils.py": "802b003f67d55cc1acdeea6cf70ec38b0b474251ad66fc20cb5a595de0fd3ab6"
+          },
+          "parameter_counts": {
+            "baseline_decoder": 30992,
+            "gru_decoder": 20514,
+            "gru_total": 39970
+          },
+          "smoke_test": false
+        },
+        "analysis": "doc/results/turn_angle_analysis_seed2026_gru_decoder.json",
+        "checkpoint_sha256": "82228fdb5668eaa4905aa0008a0b08eb0e8ec30ae4fc7fe36eca17317dbde8d5",
+        "evaluation_reproduced": {
+          "val": {
+            "minADE6": 1.5087283849716187,
+            "minFDE6": 3.045300245285034
+          },
+          "test": {
+            "minADE6": 1.4529227018356323,
+            "minFDE6": 2.872185707092285
+          }
+        },
+        "training_dataset_hashes_recorded": true,
+        "sampling_recorded": true,
+        "training_history_verified": true,
+        "source_hash_exceptions": [],
+        "turn_analysis": {
+          "model": "GraphNetworkAttentionMultimodalWithMapGRU",
+          "seed": 2026,
+          "checkpoint": "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth",
+          "checkpoint_sha256": "82228fdb5668eaa4905aa0008a0b08eb0e8ec30ae4fc7fe36eca17317dbde8d5",
+          "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+          "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+          "device": "cpu",
+          "batch_size": 64,
+          "torch_version": "2.14.1+cu130",
+          "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+          "minimum_endpoint_displacement_m": 5.0,
+          "std_ddof": 0,
+          "input_samples": 7242,
+          "invalid_sample_indices": [],
+          "excluded_displacement_below_5m": 218,
+          "full_test": {
+            "n": 7242,
+            "minADE6": {
+              "mean": 1.45292280243596,
+              "median": 1.149294674396515,
+              "std": 1.1794069358485275
+            },
+            "minFDE6": {
+              "mean": 2.872185738319176,
+              "median": 2.1064505577087402,
+              "std": 2.8573478995436563
+            }
+          },
+          "non_stationary": {
+            "n": 7024,
+            "minADE6": {
+              "mean": 1.470345197260329,
+              "median": 1.1625199913978577,
+              "std": 1.185086479987841
+            },
+            "minFDE6": {
+              "mean": 2.915708798343347,
+              "median": 2.143244743347168,
+              "std": 2.877824856062314
+            }
+          },
+          "turn_bins": {
+            "0-15 deg": {
+              "n": 6022,
+              "minADE6": {
+                "mean": 1.2801352739160894,
+                "median": 1.0852975249290466,
+                "std": 0.8761859571913263
+              },
+              "minFDE6": {
+                "mean": 2.424226491205003,
+                "median": 1.971409022808075,
+                "std": 1.9573552463489128
+              }
+            },
+            "15-30 deg": {
+              "n": 381,
+              "minADE6": {
+                "mean": 2.3081956823354006,
+                "median": 2.0236361026763916,
+                "std": 1.3032133322457373
+              },
+              "minFDE6": {
+                "mean": 5.4476010915859945,
+                "median": 4.416244983673096,
+                "std": 3.670690666192642
+              }
+            },
+            "30-60 deg": {
+              "n": 534,
+              "minADE6": {
+                "mean": 2.646420378140296,
+                "median": 1.9830223321914673,
+                "std": 2.074559986680716
+              },
+              "minFDE6": {
+                "mean": 5.666942539119096,
+                "median": 3.890953540802002,
+                "std": 5.3088839246295345
+              }
+            },
+            "60+ deg": {
+              "n": 87,
+              "minADE6": {
+                "mean": 3.7484943578983176,
+                "median": 3.2986667156219482,
+                "std": 2.6713573429401767
+              },
+              "minFDE6": {
+                "mean": 8.960498134980256,
+                "median": 8.688908576965332,
+                "std": 6.607406877373013
+              }
+            }
+          },
+          "sanity_check": {
+            "shared_evaluator_matches": true,
+            "manifest": "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.json",
+            "manifest_num_epochs": 60,
+            "manifest_test_metrics": {
+              "minADE6": 1.4529227018356323,
+              "minFDE6": 2.872185707092285
+            },
+            "full_test_minus_manifest": {
+              "minADE6": 1.006003276238232e-07,
+              "minFDE6": 3.122689085088837e-08
+            },
+            "manifest_matches": true,
+            "tolerance": {
+              "atol_m": 0.001,
+              "rtol": 0.0001
+            },
+            "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+          }
+        }
+      }
+    }
+  },
+  "overall": {
+    "minADE6": {
+      "mlp": {
+        "mean": 1.5325451294581096,
+        "std": 0.0034143640740255973,
+        "per_seed": {
+          "42": 1.5354605913162231,
+          "123": 1.5344208478927612,
+          "2026": 1.5277539491653442
+        }
+      },
+      "gru": {
+        "mean": 1.4741512139638264,
+        "std": 0.01607539134281249,
+        "per_seed": {
+          "42": 1.4918110370635986,
+          "123": 1.4777199029922485,
+          "2026": 1.4529227018356323
+        }
+      },
+      "absolute_improvement_m": 0.05839391549428319,
+      "percentage_improvement": 3.810257484223685,
+      "paired_seed_improvements_m": {
+        "42": 0.04364955425262451,
+        "123": 0.056700944900512695,
+        "2026": 0.07483124732971191
+      }
+    },
+    "minFDE6": {
+      "mlp": {
+        "mean": 3.121037244796753,
+        "std": 0.012009313075208639,
+        "per_seed": {
+          "42": 3.1098685264587402,
+          "123": 3.137702226638794,
+          "2026": 3.1155409812927246
+        }
+      },
+      "gru": {
+        "mean": 2.9309375286102295,
+        "std": 0.044113152044808895,
+        "per_seed": {
+          "42": 2.978482723236084,
+          "123": 2.9421441555023193,
+          "2026": 2.872185707092285
+        }
+      },
+      "absolute_improvement_m": 0.19009971618652344,
+      "percentage_improvement": 6.090914695217072,
+      "paired_seed_improvements_m": {
+        "42": 0.13138580322265625,
+        "123": 0.1955580711364746,
+        "2026": 0.24335527420043945
+      }
+    }
+  },
+  "turn_bins": {
+    "0-15 deg": {
+      "n": 6022,
+      "minADE6": {
+        "mlp": {
+          "mean": 1.3310607742573037,
+          "std": 0.014251811971231487,
+          "per_seed": {
+            "42": 1.3279206365673537,
+            "123": 1.3498725329313275,
+            "2026": 1.31538915327323
+          }
+        },
+        "gru": {
+          "mean": 1.30254546313823,
+          "std": 0.01586514039326802,
+          "per_seed": {
+            "42": 1.3146947949112688,
+            "123": 1.3128063205873322,
+            "2026": 1.2801352739160894
+          }
+        },
+        "absolute_improvement_m": 0.028515311119073683,
+        "percentage_improvement": 2.142299710919245,
+        "paired_seed_improvements_m": {
+          "42": 0.013225841656084869,
+          "123": 0.03706621234399532,
+          "2026": 0.03525387935714064
+        }
+      },
+      "minFDE6": {
+        "mlp": {
+          "mean": 2.563681866651032,
+          "std": 0.05142039020596379,
+          "per_seed": {
+            "42": 2.548925418876562,
+            "123": 2.6327266960084064,
+            "2026": 2.5093934850681268
+          }
+        },
+        "gru": {
+          "mean": 2.4722634335015763,
+          "std": 0.03398668013582828,
+          "per_seed": {
+            "42": 2.494874505957447,
+            "123": 2.497689303342279,
+            "2026": 2.424226491205003
+          }
+        },
+        "absolute_improvement_m": 0.09141843314945586,
+        "percentage_improvement": 3.565903957844693,
+        "paired_seed_improvements_m": {
+          "42": 0.054050912919115124,
+          "123": 0.13503739266612724,
+          "2026": 0.08516699386312387
+        }
+      }
+    },
+    "15-30 deg": {
+      "n": 381,
+      "minADE6": {
+        "mlp": {
+          "mean": 2.3413325919984,
+          "std": 0.0596223657097241,
+          "per_seed": {
+            "42": 2.3707330883175057,
+            "123": 2.2581929702927748,
+            "2026": 2.395071717384919
+          }
+        },
+        "gru": {
+          "mean": 2.3176722509341605,
+          "std": 0.012936934988343411,
+          "per_seed": {
+            "42": 2.3359638527622373,
+            "123": 2.308857217704843,
+            "2026": 2.3081956823354006
+          }
+        },
+        "absolute_improvement_m": 0.023660341064239532,
+        "percentage_improvement": 1.0105501945814839,
+        "paired_seed_improvements_m": {
+          "42": 0.03476923555526845,
+          "123": -0.05066424741206843,
+          "2026": 0.08687603504951857
+        }
+      },
+      "minFDE6": {
+        "mlp": {
+          "mean": 5.602939120708123,
+          "std": 0.22236149110510858,
+          "per_seed": {
+            "42": 5.623934543097582,
+            "123": 5.320712972891926,
+            "2026": 5.864169846134861
+          }
+        },
+        "gru": {
+          "mean": 5.584955001616572,
+          "std": 0.13059834479575586,
+          "per_seed": {
+            "42": 5.760563332030154,
+            "123": 5.5467005812335675,
+            "2026": 5.4476010915859945
+          }
+        },
+        "absolute_improvement_m": 0.017984119091551065,
+        "percentage_improvement": 0.3209765215024888,
+        "paired_seed_improvements_m": {
+          "42": -0.1366287889325717,
+          "123": -0.2259876083416419,
+          "2026": 0.41656875454886677
+        }
+      }
+    },
+    "30-60 deg": {
+      "n": 534,
+      "minADE6": {
+        "mlp": {
+          "mean": 3.0879401405168685,
+          "std": 0.09690023058121972,
+          "per_seed": {
+            "42": 3.1793534691525758,
+            "123": 2.9538186327571725,
+            "2026": 3.1306483196408563
+          }
+        },
+        "gru": {
+          "mean": 2.7292040598005536,
+          "std": 0.08878971541638873,
+          "per_seed": {
+            "42": 2.852361216527246,
+            "123": 2.68883058473412,
+            "2026": 2.646420378140296
+          }
+        },
+        "absolute_improvement_m": 0.3587360807163149,
+        "percentage_improvement": 11.61732625608049,
+        "paired_seed_improvements_m": {
+          "42": 0.3269922526253297,
+          "123": 0.2649880480230524,
+          "2026": 0.48422794150056037
+        }
+      },
+      "minFDE6": {
+        "mlp": {
+          "mean": 7.299228753558547,
+          "std": 0.29910505034416024,
+          "per_seed": {
+            "42": 7.395169187379017,
+            "123": 6.8944780416926195,
+            "2026": 7.6080390316040045
+          }
+        },
+        "gru": {
+          "mean": 5.979866138921025,
+          "std": 0.2768214492492488,
+          "per_seed": {
+            "42": 6.340053950077139,
+            "123": 5.932601927566841,
+            "2026": 5.666942539119096
+          }
+        },
+        "absolute_improvement_m": 1.3193626146375221,
+        "percentage_improvement": 18.07537014091114,
+        "paired_seed_improvements_m": {
+          "42": 1.0551152373018784,
+          "123": 0.9618761141257783,
+          "2026": 1.9410964924849088
+        }
+      }
+    },
+    "60+ deg": {
+      "n": 87,
+      "minADE6": {
+        "mlp": {
+          "mean": 3.8208875286168067,
+          "std": 0.16621230548857605,
+          "per_seed": {
+            "42": 3.5859612144272903,
+            "123": 3.9314938701432327,
+            "2026": 3.9452075012798966
+          }
+        },
+        "gru": {
+          "mean": 3.577019379056733,
+          "std": 0.1222299994527885,
+          "per_seed": {
+            "42": 3.472374011045215,
+            "123": 3.510189768226667,
+            "2026": 3.7484943578983176
+          }
+        },
+        "absolute_improvement_m": 0.24386814956007363,
+        "percentage_improvement": 6.382500079722471,
+        "paired_seed_improvements_m": {
+          "42": 0.11358720338207551,
+          "123": 0.42130410191656553,
+          "2026": 0.19671314338157897
+        }
+      },
+      "minFDE6": {
+        "mlp": {
+          "mean": 9.03704937904274,
+          "std": 0.3977736725543766,
+          "per_seed": {
+            "42": 8.477260058638693,
+            "123": 9.26885267372789,
+            "2026": 9.365035404761633
+          }
+        },
+        "gru": {
+          "mean": 8.350898387788355,
+          "std": 0.43503923259292826,
+          "per_seed": {
+            "42": 7.974127603330832,
+            "123": 8.11806942505398,
+            "2026": 8.960498134980256
+          }
+        },
+        "absolute_improvement_m": 0.6861509912543848,
+        "percentage_improvement": 7.592644042043137,
+        "paired_seed_improvements_m": {
+          "42": 0.5031324553078615,
+          "123": 1.1507832486739105,
+          "2026": 0.40453726978137716
+        }
+      }
+    }
+  },
+  "source_sha256": {
+    "scripts/train_gru_decoder.py": "5366c88f01c621b52f57632c187a7bffd190a6864f5129118f513194e15c7bea",
+    "scripts/run_turn_angle_analysis.py": "e8140cc58d5c2e01a0fcd330ab47d7907f82aecf5eec42a02fe405a64eac3607",
+    "scripts/compare_decoder_multiseed.py": "7ee3110b7cf9b649b3f2fc719f0e52941716b8719d5a2c82bfb4d3b1579d306f",
+    "utils/gru_future_decoder.py": "53fd4c48432f57f12e8757dbd3b062882084a90797a426fe2a3244236e11f31a"
+  },
+  "interpretation": [
+    "Overall full test: minADE6: +3.81% mean improvement; GRU improves in 3/3 matched seeds; minFDE6: +6.09% mean improvement; GRU improves in 3/3 matched seeds.",
+    "0-15 deg: minADE6: +2.14% mean improvement; GRU improves in 3/3 matched seeds; minFDE6: +3.57% mean improvement; GRU improves in 3/3 matched seeds.",
+    "15-30 deg: minADE6: +1.01% mean improvement; GRU improves in 2/3 matched seeds; minFDE6: +0.32% mean improvement; GRU improves in 1/3 matched seeds.",
+    "30-60 deg: minADE6: +11.62% mean improvement; GRU improves in 3/3 matched seeds; minFDE6: +18.08% mean improvement; GRU improves in 3/3 matched seeds.",
+    "60+ deg: minADE6: +6.38% mean improvement; GRU improves in 3/3 matched seeds; minFDE6: +7.59% mean improvement; GRU improves in 3/3 matched seeds.",
+    "The matched results support selecting the GRU as the final model for this project: overall metrics improve in every seed, sharp-turn bin means improve, and mean straight-trajectory error stays close or improves. This is repeated descriptive evidence, not a statistical significance or causal claim.",
+    "Sharp-turn degradation remains present; these improvements do not resolve the difficulty."
+  ],
+  "protected_existing_files_verified": 63,
+  "integrity_notes": [
+    "All six checkpoints strictly load into the expected original MLP or GRU class; all manifests specify 60 epochs, six modes, radius 35 m, batch size 64 and Adam learning rate 0.001.",
+    "All six validation and full-test evaluations reproduce their manifests. Saved turn-bin evaluations match the same checkpoints and test dataset hashes and passed independent/shared evaluator checks.",
+    "New MLP runs and all GRU runs record identical train/validation/test hashes, unchanged model/graph/training utility hashes and uniform sampling without replacement. These settings were checked at runtime for the new MLP runs.",
+    "The relevant map-model and map-encoder classes are checked against pinned baseline commit 631c7d4e1ad2fcda37d57570989b630541af874a. On a clean checkout, removing the unrelated uncommitted TargetHistoryMLP addition may change the whole utils/models.py hash; that exception is reported and accepted only when the relevant classes still match exactly. Graph/training utility hashes must still match.",
+    "Historical MLP seed-2026 manifest does not record training/validation dataset hashes or sampler details. Its full-test result and prior training-set evaluation match the current files; original source/default training procedure is consistent with unweighted sampling, but missing historical provenance cannot be retroactively verified.",
+    "63 pre-existing files verified unchanged, including existing baseline/GRU checkpoints, datasets, historical results and unrelated user edits.",
+    "Model architecture, map encoder, graph construction, preprocessing, splits, loss and evaluator were not modified. No weighted sampling is used in this matched comparison."
+  ]
+}
