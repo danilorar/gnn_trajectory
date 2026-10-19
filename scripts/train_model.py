@@ -47,9 +47,10 @@ def load_graphs(split, use_map):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, choices=(
-        "target_mlp", "attention", "multimodal", "multimodal_map", "multimodal_map_gru",
-    ))
+    parser.add_argument(
+        "--model", required=True,
+        choices=("target_mlp", "attention", "multimodal", "multimodal_map", "multimodal_map_gru"),
+    )
     parser.add_argument("--seed", type=int, help="Default: 42, or the saved seed when evaluating")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -118,7 +119,9 @@ def main():
 
     if not args.evaluate_only:
         train_loader = DataLoader(
-            train_graphs, batch_size=args.batch_size, shuffle=True,
+            train_graphs,
+            batch_size=args.batch_size,
+            shuffle=True,
             generator=torch.Generator().manual_seed(seed),
         )
     val_loader = DataLoader(val_graphs, batch_size=args.batch_size, shuffle=False)
@@ -129,12 +132,21 @@ def main():
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         print(f"Training {args.model} | seed={seed} | device={device}", flush=True)
         train_losses, val_losses = train_and_validate(
-            model, train_loader, val_loader, optimizer, criterion,
-            args.epochs, checkpoint, device,
+            model,
+            train_loader,
+            val_loader,
+            optimizer,
+            criterion,
+            args.epochs,
+            checkpoint,
+            device,
         )
 
     # Evaluate the best validation checkpoint, rather than the final epoch.
-    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
+    model.load_state_dict(
+        torch.load(checkpoint, map_location=device, weights_only=True),
+        strict=True,
+    )
     val_ade, val_fde = evaluator(model, val_loader, device)
     test_ade, test_fde = evaluator(model, test_loader, device)
     validation = {metric_names[0]: float(val_ade), metric_names[1]: float(val_fde)}
@@ -142,23 +154,37 @@ def main():
 
     if not args.evaluate_only:
         save_run_manifest(
-            checkpoint, model=args.model, model_class=type(model).__name__, seed=seed,
-            radius=35, num_modes=6 if multimodal else 1, num_epochs=args.epochs,
-            best_epoch=int(np.argmin(val_losses)) + 1, best_val_loss=min(val_losses),
-            batch_size=args.batch_size, lr=args.lr, device=str(device),
-            validation_metrics=validation, test_metrics=testing,
+            checkpoint,
+            model=args.model,
+            model_class=type(model).__name__,
+            seed=seed,
+            radius=35,
+            num_modes=6 if multimodal else 1,
+            num_epochs=args.epochs,
+            best_epoch=int(np.argmin(val_losses)) + 1,
+            best_val_loss=min(val_losses),
+            batch_size=args.batch_size,
+            lr=args.lr,
+            device=str(device),
+            validation_metrics=validation,
+            test_metrics=testing,
             sampling="Standard uniform shuffle without replacement; unmodified validation/test",
         )
 
     print(f"Final results | model={args.model} | seed={seed}")
     for label, metrics in (("Validation", validation), ("Test", testing)):
-        print(f"{label}: {metric_names[0]}: {metrics[metric_names[0]]:.6f} m | "
-              f"{metric_names[1]}: {metrics[metric_names[1]]:.6f} m")
+        print(
+            f"{label}: {metric_names[0]}: {metrics[metric_names[0]]:.6f} m | "
+            f"{metric_names[1]}: {metrics[metric_names[1]]:.6f} m"
+        )
     print(f"Checkpoint: {checkpoint}")
     if args.output:
         result = {
-            "model": args.model, "seed": seed, "checkpoint": str(checkpoint),
-            "validation_metrics": validation, "test_metrics": testing,
+            "model": args.model,
+            "seed": seed,
+            "checkpoint": str(checkpoint),
+            "validation_metrics": validation,
+            "test_metrics": testing,
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")

@@ -62,16 +62,20 @@ def print_summary(label, summary):
     if summary["n"]:
         for name in ("minADE6", "minFDE6"):
             stats = summary[name]
-            print(f"  {name}: mean={stats['mean']:.6f}, median={stats['median']:.6f}, "
-                  f"std={stats['std']:.6f} m")
+            print(
+                f"  {name}: mean={stats['mean']:.6f}, median={stats['median']:.6f}, "
+                f"std={stats['std']:.6f} m"
+            )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, help="Default: saved checkpoint seed, or 2026")
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--model", choices=("multimodal_map", "multimodal_map_gru"),
-                        help="Default: saved model name, or multimodal_map_gru")
+    parser.add_argument(
+        "--model", choices=("multimodal_map", "multimodal_map_gru"),
+        help="Default: saved model name, or multimodal_map_gru",
+    )
     parser.add_argument("--dataset", type=Path, default=DATASET)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -138,7 +142,10 @@ def main():
     else:
         parser.error("Expected a map-aware MLP or GRU checkpoint")
     model = model.to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True), strict=True)
+    model.load_state_dict(
+        torch.load(args.checkpoint, map_location=device, weights_only=True),
+        strict=True,
+    )
     model.eval()
     ades, fdes = [], []
     with torch.no_grad():
@@ -164,11 +171,16 @@ def main():
     for label, mask in zip(LABELS, masks):
         bins[label] = summarize(ades[mask], fdes[mask])
     result = {
-        "model": model_name, "seed": seed, "checkpoint": str(args.checkpoint),
-        "dataset": str(args.dataset), "batch_size": args.batch_size,
+        "model": model_name,
+        "seed": seed,
+        "checkpoint": str(args.checkpoint),
+        "dataset": str(args.dataset),
+        "batch_size": args.batch_size,
         "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
-        "minimum_endpoint_displacement_m": 5.0, "std_ddof": 0,
-        "input_samples": len(samples), "invalid_sample_indices": invalid,
+        "minimum_endpoint_displacement_m": 5.0,
+        "std_ddof": 0,
+        "input_samples": len(samples),
+        "invalid_sample_indices": invalid,
         "excluded_displacement_below_5m": int((~moving).sum()),
         "full_test": summarize(ades, fdes),
         "non_stationary": summarize(ades[moving], fdes[moving]),
@@ -191,8 +203,11 @@ def main():
         means = [bins[label]["minADE6"]["mean"] for label in LABELS]
         fig, ax = plt.subplots(figsize=(7, 4))
         ax.bar(LABELS, [np.nan if value is None else value for value in means])
-        ax.set(xlabel="Absolute endpoint angle", ylabel="Mean minADE6 (m)",
-               title=f"Seed {seed}; displacement ≥5 m")
+        ax.set(
+            xlabel="Absolute endpoint angle",
+            ylabel="Mean minADE6 (m)",
+            title=f"Seed {seed}; displacement ≥5 m",
+        )
         fig.tight_layout()
         fig.savefig(args.output.with_suffix(".png"), dpi=160)
         plt.close(fig)

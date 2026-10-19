@@ -31,8 +31,11 @@ def ade_for_sample(model, batch):
 def summarize(values):
     if not len(values):
         return {
-            "n": 0, "mean_delta_ade_m": None, "median_delta_ade_m": None,
-            "std_delta_ade_m": None, "gat_win_percentage": None,
+            "n": 0,
+            "mean_delta_ade_m": None,
+            "median_delta_ade_m": None,
+            "std_delta_ade_m": None,
+            "gat_win_percentage": None,
         }
     values = np.asarray(values)
     return {
@@ -50,10 +53,12 @@ def print_bins(title, bins):
         if not values["n"]:
             print(f"{name}: no samples")
             continue
-        print(f"{name} | mean ΔADE={values['mean_delta_ade_m']:.6f} m | "
-              f"median={values['median_delta_ade_m']:.6f} m | "
-              f"std={values['std_delta_ade_m']:.6f} m | "
-              f"GAT wins={values['gat_win_percentage']:.1f}% | n={values['n']}")
+        print(
+            f"{name} | mean ΔADE={values['mean_delta_ade_m']:.6f} m | "
+            f"median={values['median_delta_ade_m']:.6f} m | "
+            f"std={values['std_delta_ade_m']:.6f} m | "
+            f"GAT wins={values['gat_win_percentage']:.1f}% | n={values['n']}"
+        )
 
 
 def main():
@@ -77,8 +82,14 @@ def main():
     gat_checkpoint = args.checkpoint_dir / f"attention_seed{args.seed}_best.pth"
     mlp = TargetHistoryMLP().to(device)
     gat = GraphNetworkAttention().to(device)
-    mlp.load_state_dict(torch.load(mlp_checkpoint, map_location=device, weights_only=True), strict=True)
-    gat.load_state_dict(torch.load(gat_checkpoint, map_location=device, weights_only=True), strict=True)
+    mlp.load_state_dict(
+        torch.load(mlp_checkpoint, map_location=device, weights_only=True),
+        strict=True,
+    )
+    gat.load_state_dict(
+        torch.load(gat_checkpoint, map_location=device, weights_only=True),
+        strict=True,
+    )
     mlp.eval()
     gat.eval()
 
@@ -126,19 +137,29 @@ def main():
     for label, values in distance_bins.items():
         distance_summary[label] = summarize(values)
     result = {
-        "seed": args.seed, "dataset": str(dataset),
-        "mlp_checkpoint": str(mlp_checkpoint), "gat_checkpoint": str(gat_checkpoint),
+        "seed": args.seed,
+        "dataset": str(dataset),
+        "mlp_checkpoint": str(mlp_checkpoint),
+        "gat_checkpoint": str(gat_checkpoint),
         "delta_definition": "MLP ADE minus GAT ADE; positive means GAT wins; ties are not wins",
         "std_ddof": 0,
-        "overall": {"target_mlp_ADE": float(np.mean(mlp_ades)), "attention_ADE": float(np.mean(gat_ades))},
+        "overall": {
+            "target_mlp_ADE": float(np.mean(mlp_ades)),
+            "attention_ADE": float(np.mean(gat_ades)),
+        },
         "neighbor_count": count_summary,
         "nearest_neighbor_distance": distance_summary,
     }
     print(result["delta_definition"])
-    print(f"Overall ADE: MLP={result['overall']['target_mlp_ADE']:.6f} m | "
-          f"GAT={result['overall']['attention_ADE']:.6f} m")
+    print(
+        f"Overall ADE: MLP={result['overall']['target_mlp_ADE']:.6f} m | "
+        f"GAT={result['overall']['attention_ADE']:.6f} m"
+    )
     print_bins("GAT benefit by neighbor count:", count_summary)
-    print_bins("GAT benefit by nearest-neighbor distance [0,10), [10,20), [20,35] m:", distance_summary)
+    print_bins(
+        "GAT benefit by nearest-neighbor distance [0,10), [10,20), [20,35] m:",
+        distance_summary,
+    )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")

@@ -64,7 +64,16 @@ def ade_loss(predictions, targets):
 
 
 # Training and validation loop
-def train_and_validate(model, train_loader, val_loader, optimizer, criterion, num_epochs, checkpoint_path, device=None):
+def train_and_validate(
+    model,
+    train_loader,
+    val_loader,
+    optimizer,
+    criterion,
+    num_epochs,
+    checkpoint_path,
+    device=None,
+):
     """Train and validate a model for multiple epochs. Saves the parameters of the best model based on validation loss."""
 
     if num_epochs < 1:
@@ -103,14 +112,14 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
             loss.backward()  # Backward pass
             optimizer.step()  # Update model parameters
 
-            train_total_loss += (loss.item() * batch.num_graphs)  # Accumulate total loss
+            train_total_loss += loss.item() * batch.num_graphs  # Accumulate total loss
             train_examples += batch.num_graphs  # Accumulate number of examples
 
         # Compute average training loss for the epoch
         if train_examples == 0:
             raise ValueError("Training loader is empty")
 
-        train_avg_loss = (train_total_loss / train_examples)
+        train_avg_loss = train_total_loss / train_examples
         train_losses.append(train_avg_loss)
 
         model.eval()  # set evaluation mode
@@ -133,14 +142,14 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
                 if not torch.isfinite(loss).item():
                     raise ValueError("Non-finite validation loss; training stopped")
 
-                val_total_loss += (loss.item() * batch.num_graphs)  # Accumulate total loss
+                val_total_loss += loss.item() * batch.num_graphs  # Accumulate total loss
                 val_examples += batch.num_graphs  # Accumulate number of examples
 
         # Compute average validation loss for the epoch
         if val_examples == 0:
             raise ValueError("Validation loader is empty")
 
-        val_avg_loss = (val_total_loss / val_examples)
+        val_avg_loss = val_total_loss / val_examples
         val_losses.append(val_avg_loss)
 
         # Print
@@ -159,6 +168,7 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
             )
 
     return train_losses, val_losses
+
 
 def best_of_k_ade_loss(pred, target):
     """Mean minimum ADE across modes; pred has shape [B, K, 12, 2]."""
@@ -215,7 +225,7 @@ def evaluate_model(model, loader, device=None):
 
             batch = batch.to(device)
 
-            pred = model(batch) # Forward pass
+            pred = model(batch)  # Forward pass
             target = batch.y.view(batch.num_graphs, 12, 2)
 
             errors = torch.norm(pred - target, dim=2)  # Euclidean distance for each timestep
@@ -234,6 +244,7 @@ def evaluate_model(model, loader, device=None):
     mean_fde = np.mean(fde_list)
 
     return mean_ade, mean_fde
+
 
 def plot_losses(train_losses, val_losses, title="Training and Validation Losses"):
     import matplotlib.pyplot as plt

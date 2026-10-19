@@ -15,6 +15,7 @@ from utils.graph_utils import (
     remove_neighbors,
 )
 
+
 def evaluate_by_density(model, dataset, graphs, device=None):
     """
     Evaluate ADE and FDE separately for sparse, medium,
@@ -65,9 +66,11 @@ def evaluate_by_density(model, dataset, graphs, device=None):
 
     return summary
 
+
 # ========================================================
 
-def evaluate_neighbor_without_neighbors(model, graphs,device=None):
+
+def evaluate_neighbor_without_neighbors(model, graphs, device=None):
     """
     Evaluate the model after removing all neighbor nodes.
     """
@@ -103,7 +106,9 @@ def evaluate_neighbor_without_neighbors(model, graphs,device=None):
         np.mean(fde_list)
     )
 
+
 # ========================================================
+
 
 def neighbor_effect_by_count(
     model,
@@ -137,16 +142,12 @@ def neighbor_effect_by_count(
 
         for sample, graph in zip(dataset, graphs):
 
-            num_neighbors = len(
-                sample["neighbors_pasts"]
-            )
+            num_neighbors = len(sample["neighbors_pasts"])
 
             # Normal graph
             graph_device = graph.to(device)
 
-            batch = Batch.from_data_list(
-                [graph_device]
-            )
+            batch = Batch.from_data_list([graph_device])
 
             pred = model(batch)
 
@@ -161,48 +162,34 @@ def neighbor_effect_by_count(
                 dim=2
             )
 
-            normal_ade = (
-                normal_errors.mean().item()
-            )
+            normal_ade = normal_errors.mean().item()
 
             # Ablated graph
-            ablated_graph = remove_neighbors(
-                graph
-            ).to(device)
+            ablated_graph = remove_neighbors(graph).to(device)
 
-            ablated_batch = Batch.from_data_list(
-                [ablated_graph]
-            )
+            ablated_batch = Batch.from_data_list([ablated_graph])
 
-            ablated_pred = model(
-                ablated_batch
-            )
+            ablated_pred = model(ablated_batch)
 
             ablated_errors = torch.norm(
                 ablated_pred - target,
                 dim=2
             )
 
-            ablated_ade = (
-                ablated_errors.mean().item()
-            )
+            ablated_ade = ablated_errors.mean().item()
 
             # Positive means removing neighbors increased error.
-            delta_ade = (
-                ablated_ade - normal_ade
-            )
+            delta_ade = ablated_ade - normal_ade
 
-            neighbor_counts.append(
-                num_neighbors
-            )
+            neighbor_counts.append(num_neighbors)
 
-            delta_ades.append(
-                delta_ade
-            )
+            delta_ades.append(delta_ade)
 
     return neighbor_counts, delta_ades
 
+
 # ========================================================
+
 
 def bin_neighbor_effect(
     neighbor_counts,

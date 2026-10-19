@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import GATv2Conv, global_max_pool
 
+
 class TargetHistoryMLP(nn.Module):
     """Target history/category baseline with no interaction modeling."""
 
@@ -30,6 +31,7 @@ class TargetHistoryMLP(nn.Module):
         pred = self.decoder(h)
 
         return pred.view(-1, 12, 2)
+
 
 class GraphNetworkAttention(nn.Module):
     """Two-layer GATv2 attention GNN for single-mode trajectory prediction."""
@@ -85,6 +87,7 @@ class GraphNetworkAttention(nn.Module):
 
         return pred
 
+
 class GraphNetworkAttentionMultimodal(nn.Module):
     """Predict multiple 12-step xy trajectories for each target agent."""
 
@@ -126,8 +129,10 @@ class GraphNetworkAttentionMultimodal(nn.Module):
         pred = self.decoder(h_target)
         return pred.view(-1, self.num_modes, 12, 2)
 
+
 class MapEncoder(nn.Module):
     """Encodes lane-centerline map context into a fixed-size embedding for each target agent."""
+
     def __init__(self, hidden_dim=32):
         super().__init__()
 
@@ -161,6 +166,7 @@ class MapEncoder(nn.Module):
         )
 
         return map_embeddings
+
 
 class GraphNetworkAttentionMultimodalWithMap(nn.Module):
     """Multimodal GATv2 trajectory predictor with lane-centerline map context"""
@@ -222,7 +228,7 @@ class GraphNetworkAttentionMultimodalWithMap(nn.Module):
         map_lane_batch = torch.repeat_interleave(
             torch.arange(
                 len(num_map_lanes),
-                device = batch.map_points.device
+                device=batch.map_points.device
             ),
             num_map_lanes
         )
@@ -261,7 +267,14 @@ class GRUFutureDecoder(nn.Module):
     Ground-truth futures are never inputs to this decoder.
     """
 
-    def __init__(self, context_dim=96, num_modes=6, mode_dim=16, hidden_dim=64, steps=12):
+    def __init__(
+        self,
+        context_dim=96,
+        num_modes=6,
+        mode_dim=16,
+        hidden_dim=64,
+        steps=12,
+    ):
         super().__init__()
         self.num_modes = num_modes
         self.steps = steps
