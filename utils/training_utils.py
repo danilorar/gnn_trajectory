@@ -12,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 
 
 def set_seed(seed: int) -> None:
@@ -53,7 +52,6 @@ def save_run_manifest(checkpoint_path, **info) -> None:
     manifest_path.write_text(payload + "\n")
 
 
-# For loss function
 def ade_loss(predictions, targets):
     """Compute the Average Displacement Error (ADE) between predictions and targets."""
     errors = torch.norm(predictions - targets, dim=2)
@@ -74,12 +72,7 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
     val_losses = []
     best_val_loss = float('inf')  # Initialize best validation loss to infinity
 
-    # loop
     for epoch in range(num_epochs):
-
-        # ==================
-        # ==== TRAINING ====
-        # ==================
 
         model.train()  # set training mode
 
@@ -114,11 +107,6 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
 
         train_avg_loss = (train_total_loss / train_examples)
         train_losses.append(train_avg_loss)
-
-
-        # ====================
-        # ==== VALIDATION ====
-        # ====================
 
         model.eval()  # set evaluation mode
 
@@ -157,7 +145,7 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
             f"Val ADE: {val_avg_loss:.4f} m"
         )
 
-        # SAVE BEST CHECKPOINT
+        # Select the checkpoint using validation loss only.
         if val_avg_loss < best_val_loss:
             best_val_loss = val_avg_loss
             torch.save(
@@ -166,8 +154,6 @@ def train_and_validate(model, train_loader, val_loader, optimizer, criterion, nu
             )
 
     return train_losses, val_losses
-
-# ========================================================
 
 def best_of_k_ade_loss(pred, target):
     """Mean minimum ADE across modes; pred has shape [B, K, 12, 2]."""
@@ -244,9 +230,9 @@ def evaluate_model(model, loader, device=None):
 
     return mean_ade, mean_fde
 
-# ========================================================
-
 def plot_losses(train_losses, val_losses, title="Training and Validation Losses"):
+    import matplotlib.pyplot as plt
+
     plt.figure(figsize=(10, 6))
 
     plt.plot(train_losses, label="Train Loss")

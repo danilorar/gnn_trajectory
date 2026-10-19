@@ -192,7 +192,7 @@ def sample_to_graph(sample):
     num_map_lanes = len(map_lanes)
 
     for lane_idx, lane in enumerate(map_lanes):
-        # Each lane is a sequence of points, which we flatten into a single vector
+        # Append each xy point and its lane ID; lane polylines remain distinct for pooling.
         for point in lane: 
             map_points.append(point)
             map_lane_index.append(lane_idx)

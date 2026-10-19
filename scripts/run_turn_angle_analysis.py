@@ -1,12 +1,10 @@
-"""Evaluate the existing map model by ground-truth endpoint angle; no training.
+"""Evaluate a saved map-aware checkpoint by absolute future endpoint angle.
 
-Angles use half-open bins [0,15), [15,30), [30,60), [60,180] degrees.
-The manifest covers the full test set, so it is checked against that same
-population before interpreting results on the displacement >= 5 m subset.
+Only displacement >=5 m enters the bins. Full-test metrics must reproduce
+its manifest before interpreting bins. This script never trains a model.
 """
 
 import argparse
-import hashlib
 import json
 import pickle
 import sys
@@ -20,22 +18,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from utils.experiment_utils import read_manifest, sha256, write_json
 from utils.graph_utils import sample_to_graph
-from utils.models import GraphNetworkAttentionMultimodalWithMap
-from utils.gru_future_decoder import GraphNetworkAttentionMultimodalWithMapGRU
+from utils.models import GraphNetworkAttentionMultimodalWithMap, GraphNetworkAttentionMultimodalWithMapGRU
 from utils.training_utils import evaluate_multimodal_model, set_seed
 
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
+LABELS = ("0-15 deg", "15-30 deg", "30-60 deg", "60+ deg")
 
 
 def endpoint_geometry(future):
-    """Return displacement in metres and absolute endpoint angle in degrees."""
+    """Return final displacement in metres and absolute endpoint angle in degrees."""
     x, y = np.asarray(future, dtype=np.float64)[-1]
     return float(np.hypot(x, y)), float(abs(np.degrees(np.arctan2(y, x))))
 
@@ -51,11 +44,9 @@ def per_sample_metrics(predictions, targets):
 def summarize(ades, fdes):
     result = {"n": int(len(ades))}
     for name, values in (("minADE6", ades), ("minFDE6", fdes)):
-        result[name] = {
-            "mean": float(np.mean(values)) if len(values) else None,
-            "median": float(np.median(values)) if len(values) else None,
-            "std": float(np.std(values)) if len(values) else None,
-        }
+        result[name] = {"mean": float(np.mean(values)) if len(values) else None,
+                        "median": float(np.median(values)) if len(values) else None,
+                        "std": float(np.std(values)) if len(values) else None}
     return result
 
 
@@ -64,81 +55,63 @@ def print_summary(label, summary):
         print(f"{label}: n=0 (no samples)")
         return
     metrics = " | ".join(
-        f"{name} mean={summary[name]['mean']:.6f}, "
-        f"median={summary[name]['median']:.6f}, std={summary[name]['std']:.6f} m"
-        for name in ("minADE6", "minFDE6")
+        f"{name} mean={summary[name]['mean']:.6f}, median={summary[name]['median']:.6f}, "
+        f"std={summary[name]['std']:.6f} m" for name in ("minADE6", "minFDE6")
     )
     print(f"{label}: n={summary['n']} | {metrics}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", type=int, default=123, help="Training seed of the checkpoint (default: 123)")
-    parser.add_argument("--checkpoint", type=Path, help="Override the seed-derived checkpoint path")
-    parser.add_argument("--dataset", type=Path,
-                        default=PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl")
-    parser.add_argument("--output", type=Path, help="Override the seed-derived JSON output path")
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--plot", action="store_true", help="Save a mean-minADE6 bar chart")
-    args = parser.parse_args()
-    if args.batch_size < 1:
-        parser.error("--batch-size must be positive")
-    if not 0 <= args.seed < 2**32:
-        parser.error("--seed must be between 0 and 2**32 - 1")
-    if args.checkpoint is None:
-        args.checkpoint = PROJECT_ROOT / f"checkpoints/multimodal_map_seed{args.seed}_best.pth"
-    if args.output is None:
-        args.output = PROJECT_ROOT / f"doc/results/turn_angle_analysis_seed{args.seed}.json"
-    manifest_path = args.checkpoint.with_suffix(".json")
-    manifest = json.loads(manifest_path.read_text())
-    if manifest.get("seed") != args.seed:
-        raise ValueError(f"Manifest seed {manifest.get('seed')} differs from --seed {args.seed}")
-    expected = manifest.get("test_metrics", {})
-    if not all(name in expected for name in ("minADE6", "minFDE6")):
-        raise ValueError("Manifest must contain full-test minADE6 and minFDE6")
-    set_seed(args.seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    device = torch.device(
-        ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
-    )
-
-    with args.dataset.open("rb") as handle:
+def load_turn_dataset(path=DATASET, batch_size=64):
+    with Path(path).open("rb") as handle:
         samples = pickle.load(handle)
-    graphs, displacements, angles, invalid_indices = [], [], [], []
+    graphs, displacements, angles, invalid = [], [], [], []
     for index, sample in enumerate(samples):
         future = np.asarray(sample["target_future"])
         if future.shape != (12, 2) or not np.isfinite(future).all():
-            invalid_indices.append(index)
+            invalid.append(index)
             continue
-        # Missing map context is an input error, not a valid map-model experiment.
         if "map_lanes" not in sample:
             raise ValueError(f"Sample {index} has no map_lanes; use the map-aware dataset")
         graph = sample_to_graph(sample)
-        if not all(torch.isfinite(value).all() for value in
-                   (graph.x, graph.edge_attr, graph.map_points)):
-            invalid_indices.append(index)
+        if not all(torch.isfinite(t).all() for t in (graph.x, graph.edge_attr, graph.map_points)):
+            invalid.append(index)
             continue
-        displacement, angle = endpoint_geometry(future)
+        distance, angle = endpoint_geometry(future)
         graphs.append(graph)
-        displacements.append(displacement)
+        displacements.append(distance)
         angles.append(angle)
     if not graphs:
         raise ValueError("No valid test samples")
+    return {"loader": DataLoader(graphs, batch_size=batch_size, shuffle=False),
+            "displacements": np.asarray(displacements), "angles": np.asarray(angles),
+            "input_samples": len(samples), "invalid_sample_indices": invalid,
+            "dataset": str(path), "dataset_sha256": sha256(path)}
 
-    loader = DataLoader(graphs, batch_size=args.batch_size, shuffle=False)
-    model_classes = {
-        "multimodal_map": GraphNetworkAttentionMultimodalWithMap,
-        "multimodal_map_gru": GraphNetworkAttentionMultimodalWithMapGRU,
-    }
-    if manifest.get("model") not in model_classes:
-        raise ValueError(f"Unsupported manifest model: {manifest.get('model')}")
-    model = model_classes[manifest["model"]](num_modes=6).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True))
+
+def analyze_checkpoint(checkpoint, seed=None, device="cpu", data=None, batch_size=64):
+    checkpoint = Path(checkpoint)
+    manifest = read_manifest(checkpoint)
+    if seed is not None and manifest["seed"] != seed:
+        raise ValueError("Requested seed differs from the manifest")
+    seed = manifest["seed"]
+    if not 0 <= seed < 2**32 or manifest.get("num_modes") != 6:
+        raise ValueError("Expected a valid seed and six-mode checkpoint")
+    classes = {"multimodal_map": GraphNetworkAttentionMultimodalWithMap,
+               "multimodal_map_gru": GraphNetworkAttentionMultimodalWithMapGRU}
+    if manifest.get("model") not in classes:
+        raise ValueError("Expected a map-aware multimodal checkpoint")
+    data = load_turn_dataset(batch_size=batch_size) if data is None else data
+    if manifest.get("dataset_sha256", {}).get("test", data["dataset_sha256"]) != data["dataset_sha256"]:
+        raise ValueError("Test dataset differs from the manifest")
+    set_seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    device = torch.device(device)
+    loader = data["loader"]
+    model = classes[manifest["model"]](num_modes=6).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
     model.eval()
     ades, fdes = [], []
-    print(f"Evaluating {len(graphs)} valid samples on {device}", flush=True)
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
@@ -146,87 +119,81 @@ def main():
             ades.extend(ade.cpu().tolist())
             fdes.extend(fde.cpu().tolist())
     ades, fdes = np.asarray(ades), np.asarray(fdes)
-    if not (np.isfinite(ades).all() and np.isfinite(fdes).all()):
-        raise ValueError("Non-finite model metrics; do not trust turn bins")
+    shared = evaluate_multimodal_model(model, loader, device)
+    if not (np.isfinite(ades).all() and np.isfinite(fdes).all()
+            and np.allclose([ades.mean(), fdes.mean()], shared, atol=1e-5, rtol=1e-5)):
+        raise ValueError("Non-finite metrics or disagreement with the shared evaluator")
+    expected = manifest["test_metrics"]
+    names = ("minADE6", "minFDE6")
+    differences = {name: float(actual - expected[name])
+                   for name, actual in zip(names, (ades.mean(), fdes.mean()))}
+    if not all(np.isclose(actual, expected[name], atol=.001, rtol=.0001)
+               for name, actual in zip(names, (ades.mean(), fdes.mean()))):
+        raise ValueError(f"Full-test metrics differ from manifest; do not trust turn bins: {differences}")
+    moving = data["displacements"] >= 5.
+    angles = data["angles"]
+    masks = (moving & (angles < 15), moving & (angles >= 15) & (angles < 30),
+             moving & (angles >= 30) & (angles < 60), moving & (angles >= 60))
+    return {"model": type(model).__name__, "seed": seed, "checkpoint": str(checkpoint),
+            "checkpoint_sha256": sha256(checkpoint), "dataset": data["dataset"],
+            "dataset_sha256": data["dataset_sha256"], "device": str(device),
+            "batch_size": loader.batch_size, "torch_version": torch.__version__,
+            "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+            "minimum_endpoint_displacement_m": 5., "std_ddof": 0,
+            "input_samples": data["input_samples"], "invalid_sample_indices": data["invalid_sample_indices"],
+            "excluded_displacement_below_5m": int((~moving).sum()),
+            "full_test": summarize(ades, fdes), "non_stationary": summarize(ades[moving], fdes[moving]),
+            "turn_bins": {label: summarize(ades[mask], fdes[mask]) for label, mask in zip(LABELS, masks)},
+            "shared_full_test_metrics": dict(zip(names, map(float, shared))),
+            "sanity_check": {"shared_evaluator_matches": True, "manifest_matches": True,
+                             "manifest_num_epochs": manifest["num_epochs"],
+                             "manifest_test_metrics": expected, "full_test_minus_manifest": differences}}
 
-    # Independent implementation check against the project's existing evaluator.
-    reference = evaluate_multimodal_model(model, loader, device)
-    evaluator_matches = bool(np.allclose([ades.mean(), fdes.mean()], reference,
-                                         atol=1e-5, rtol=1e-5))
-    if not evaluator_matches:
-        raise RuntimeError("Per-sample metrics disagree with the shared evaluator")
-    differences = {
-        name: float(actual - expected[name])
-        for name, actual in zip(("minADE6", "minFDE6"), (ades.mean(), fdes.mean()))
-        if name in expected
-    }
-    manifest_matches = bool(len(differences) == 2 and all(
-        np.isclose(actual, expected[name], atol=0.001, rtol=0.0001)
-        for name, actual in zip(("minADE6", "minFDE6"), (ades.mean(), fdes.mean()))
-    ))
-    # Stop before producing or interpreting turn-bin results on a mismatch.
-    if not manifest_matches:
-        print_summary("Full test (manifest population)", summarize(ades, fdes))
-        raise RuntimeError(
-            f"Seed {args.seed}: full-test metrics do not match manifest. "
-            f"Expected={expected}; actual-minus-manifest={differences}. "
-            "Shared evaluator agrees with per-sample implementation; inspect "
-            "checkpoint/dataset provenance before interpreting bins. No outputs saved."
-        )
-    moving = np.asarray(displacements) >= 5.0
-    angles = np.asarray(angles)
-    masks = {
-        "0-15 deg": moving & (angles < 15),
-        "15-30 deg": moving & (angles >= 15) & (angles < 30),
-        "30-60 deg": moving & (angles >= 30) & (angles < 60),
-        "60+ deg": moving & (angles >= 60),
-    }
-    bins = {label: summarize(ades[mask], fdes[mask]) for label, mask in masks.items()}
-    result = {
-        "model": type(model).__name__, "seed": args.seed,
-        "checkpoint": str(args.checkpoint), "checkpoint_sha256": sha256(args.checkpoint),
-        "dataset": str(args.dataset), "dataset_sha256": sha256(args.dataset),
-        "device": str(device), "batch_size": args.batch_size,
-        "torch_version": torch.__version__,
-        "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
-        "minimum_endpoint_displacement_m": 5.0, "std_ddof": 0,
-        "input_samples": len(samples), "invalid_sample_indices": invalid_indices,
-        "excluded_displacement_below_5m": int((~moving).sum()),
-        "full_test": summarize(ades, fdes),
-        "non_stationary": summarize(ades[moving], fdes[moving]), "turn_bins": bins,
-        "sanity_check": {
-            "shared_evaluator_matches": evaluator_matches,
-            "manifest": str(manifest_path), "manifest_num_epochs": manifest.get("num_epochs"),
-            "manifest_test_metrics": expected, "full_test_minus_manifest": differences,
-            "manifest_matches": manifest_matches,
-            "tolerance": {"atol_m": 0.001, "rtol": 0.0001},
-            "note": "Manifest comparison uses full test, not displacement-filtered subset. "
-                    "Execution stops before turn bins if manifest metrics do not match.",
-        },
-    }
-    print_summary("Full test (manifest population)", result["full_test"])
-    print_summary("Displacement >= 5 m", result["non_stationary"])
-    print(f"Shared evaluator matches: {evaluator_matches}; manifest matches: {manifest_matches}")
-    for label, summary in bins.items():
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seed", type=int, help="Checkpoint seed; default 2026 if no explicit checkpoint")
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--dataset", type=Path, default=DATASET)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--output", type=Path, help="Optional new JSON path; existing files are protected")
+    parser.add_argument("--plot", action="store_true", help="Save a chart beside --output")
+    args = parser.parse_args()
+    if args.batch_size < 1 or (args.seed is not None and not 0 <= args.seed < 2**32):
+        parser.error("Expected a positive batch size and seed in [0, 2**32)")
+    if args.plot and not args.output:
+        parser.error("--plot requires --output")
+    for path in ([args.output, args.output.with_suffix('.png')] if args.plot else [args.output]):
+        if path and path.exists():
+            parser.error(f"Output already exists: {path}")
+    if args.checkpoint is None:
+        seed = args.seed if args.seed is not None else 2026
+        folder = PROJECT_ROOT / "checkpoints_gru_decoder"
+        if seed != 2026:
+            folder /= f"seed{seed}"
+        args.checkpoint = folder / f"multimodal_map_gru_seed{seed}_best.pth"
+    device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+    data = load_turn_dataset(args.dataset, args.batch_size)
+    result = analyze_checkpoint(args.checkpoint, args.seed, device, data)
+    print_summary("Full test", result["full_test"])
+    print_summary("Displacement >=5 m", result["non_stationary"])
+    print("Manifest and shared-evaluator checks passed.")
+    for label, summary in result["turn_bins"].items():
         print_summary(label, summary)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
-    print(f"Saved {args.output}")
+    if args.output:
+        write_json(args.output, result)
+        print(f"Saved {args.output}")
     if args.plot:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(7, 4))
-        ax.bar(list(bins), [s["minADE6"]["mean"] if s["n"] else np.nan for s in bins.values()])
-        ax.set(xlabel="Absolute endpoint angle", ylabel="Mean minADE6 (m)",
-               title=f"Current map model, seed {args.seed}; displacement ≥ 5 m")
+        ax.bar(LABELS, [result["turn_bins"][label]["minADE6"]["mean"] for label in LABELS])
+        ax.set(xlabel="Absolute endpoint angle", ylabel="Mean minADE6 (m)", title=f"Seed {result['seed']}; displacement ≥5 m")
         fig.tight_layout()
-        # Keep custom-checkpoint plots separate just like their JSON outputs.
-        plot_path = PROJECT_ROOT / "doc/figures" / f"{args.output.stem}.png"
-        plot_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(plot_path, dpi=160)
+        fig.savefig(args.output.with_suffix(".png"), dpi=160)
         plt.close(fig)
-        print(f"Saved {plot_path}")
 
 
 if __name__ == "__main__":
