@@ -19,7 +19,7 @@ Seeds 42, 123 and 2026; 60 epochs, standard unweighted sampling, best validation
 
 GRU improves overall ADE/FDE by **3.81% / 6.09%**. Gains at 30–60° endpoint angles are **11.62% / 18.08%**, and at 60°+ **6.38% / 7.59%**. Sharp-turn errors remain high. The sharpest bin has 87 samples, and three seeds do not provide scene-level confidence intervals.
 
-See the [canonical comparison](doc/results/final_decoder_multiseed_comparison.md), [machine-readable results and manifests](doc/results/final_decoder_multiseed_comparison.json), [final figure](doc/figures/final_decoder_multiseed_comparison.png), and [diagnostic chain](doc/results/diagnostic_summary.md). The canonical artifacts preserve the pre-cleanup experiment snapshot; use the commands below for the frozen interface.
+See the [canonical comparison](doc/results/final_decoder_multiseed_comparison.md), [machine-readable results and manifests](doc/results/final_decoder_multiseed_comparison.json), [final figure](doc/figures/final_decoder_multiseed_comparison.png), and [diagnostic chain](doc/results/diagnostic_summary.md). The canonical artifacts preserve the pre-cleanup experiment snapshot; use the commands below for the current workflow.
 
 ## Setup and data
 
@@ -69,14 +69,12 @@ python scripts/train_model.py --model multimodal_map_gru --evaluate-only \
 python scripts/run_turn_angle_analysis.py \
   --checkpoint checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth
 
-python scripts/compare_decoder_multiseed.py
-
 python scripts/run_interaction_analysis.py
 ```
 
-Evaluation-only mode never trains or saves weights. It infers the seed from the checkpoint manifest and verifies validation/test metrics. Turn-angle analysis excludes endpoint displacement below 5 m and uses `[0,15)`, `[15,30)`, `[30,60)`, `[60,180]` degree bins. Endpoint angle measures net future direction, **not curvature**. The matched comparison requires all six local MLP/GRU checkpoints and verifies their results against the canonical JSON. Both analysis commands print by default; `--output /path/to/new.json` saves a separate record without overwriting existing artifacts.
+Evaluation-only mode loads the saved weights and prints validation/test metrics. It uses the checkpoint manifest for the seed when available; no hashes or historical results are required. Turn-angle analysis excludes endpoint displacement below 5 m and uses `[0,15)`, `[15,30)`, `[30,60)`, `[60,180]` degree bins. Endpoint angle measures net future direction, **not curvature**. The matched three-seed comparison is preserved in the result files linked above. For the map-aware MLP baseline, pass its checkpoint to turn-angle analysis; the model is selected from its manifest (or explicitly with `--model multimodal_map`). Both analysis commands print by default; `--output /path/to/new.json` saves a separate record without overwriting existing artifacts.
 
-The interaction analysis compares the verified seed-42 target-only MLP and deterministic GATv2 checkpoints, grouped by neighbor count and nearest-neighbor distance. Positive `MLP ADE − GAT ADE` means GAT performs better; it does not establish a causal effect of neighbors.
+The interaction analysis compares the saved seed-42 target-only MLP and deterministic GATv2 checkpoints, grouped by neighbor count and nearest-neighbor distance. Positive `MLP ADE − GAT ADE` means GAT performs better; it does not establish a causal effect of neighbors.
 
 For a qualitative view of the final GRU on test sample 6706, including all six modes:
 
@@ -84,17 +82,19 @@ For a qualitative view of the final GRU on test sample 6706, including all six m
 python tools/plot_qualitative_prediction.py --sample-index 6706 --show
 ```
 
-`--show` opens a desktop plot without writing files. To save a new plot and checkpoint/data provenance JSON, omit `--show` and supply an unused `--output /path/to/new.png`. The tool verifies the checkpoint and dataset hashes against the final matched experiment. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
+`--show` opens a desktop plot without writing files. To save a new plot and prediction JSON, omit `--show` and supply an unused `--output /path/to/new.png`. The [saved seed-2026 example](doc/figures/qualitative_gru_seed2026_sample6706.png) has minADE6 4.376181 m; it illustrates a remaining sharp-turn error, not a performance-selected success case.
 
 ## Repository layout
 
 ```text
-scripts/     dataset building, common training/evaluation, final analyses
-utils/       model definitions, graph conversion, loss/training, analysis/provenance
+scripts/     build_processed_dataset.py, train_model.py, run_interaction_analysis.py,
+             run_turn_angle_analysis.py
+scripts/archive/ historical radius sweep (not part of the final workflow)
+utils/       models.py, graph_utils.py, training_utils.py, analysis_utils.py
 notebooks/   retained exploratory/teaching history; generated outputs cleared
 tools/       camera and processed-sample inspection helpers
 doc/results/ canonical decoder comparison, diagnostic summary and freeze audit
 doc/figures/ final matched decoder figure
 ```
 
-`run_radius_sweep.py` remains as the historical reproduction entry point for the [35 m selection](doc/radius_sweep_results.md); no new sweep is needed. Exploratory notebooks retain earlier GINE/radius-graph and historical FDE conventions where labelled. Use scripts for final results. The [freeze audit](doc/results/repository_freeze.md) records retained/retired files, notebook findings and validation.
+`scripts/archive/run_radius_sweep.py` remains as the historical reproduction entry point for the [35 m selection](doc/radius_sweep_results.md); no new sweep is needed. Exploratory notebooks retain earlier GINE/radius-graph and historical FDE conventions where labelled. Use scripts for final results. The [freeze audit](doc/results/repository_freeze.md) is historical documentation of the earlier cleanup; normal training and analysis do not depend on it.

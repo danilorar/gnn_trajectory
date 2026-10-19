@@ -30,6 +30,11 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def read_manifest(checkpoint):
+    """Read the run settings saved beside a checkpoint."""
+    return json.loads(Path(checkpoint).with_suffix(".json").read_text())
+
+
 def save_run_manifest(checkpoint_path, **info) -> None:
     """Write a JSON manifest next to checkpoint_path recording how it was produced.
 

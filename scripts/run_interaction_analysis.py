@@ -5,6 +5,7 @@ separately trained models, not a causal intervention removing neighbors.
 """
 
 import argparse
+import json
 import pickle
 import sys
 from pathlib import Path
@@ -17,25 +18,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from utils.experiment_utils import read_manifest, sha256, write_json
 from utils.graph_utils import sample_to_graph
 from utils.models import GraphNetworkAttention, TargetHistoryMLP
 from utils.training_utils import set_seed
 
 
-def ade_for_sample(model, graph, device):
-    batch = Batch.from_data_list([graph.to(device)])
+def ade_for_sample(model, batch):
     target = batch.y.view(1, 12, 2)
     return torch.norm(model(batch) - target, dim=2).mean().item()
 
 
 def summarize(values):
+    if not len(values):
+        return {
+            "n": 0, "mean_delta_ade_m": None, "median_delta_ade_m": None,
+            "std_delta_ade_m": None, "gat_win_percentage": None,
+        }
     values = np.asarray(values)
-    return {"n": int(len(values)),
-            "mean_delta_ade_m": float(values.mean()) if len(values) else None,
-            "median_delta_ade_m": float(np.median(values)) if len(values) else None,
-            "std_delta_ade_m": float(values.std()) if len(values) else None,
-            "gat_win_percentage": float(100 * np.mean(values > 0)) if len(values) else None}
+    return {
+        "n": len(values),
+        "mean_delta_ade_m": float(values.mean()),
+        "median_delta_ade_m": float(np.median(values)),
+        "std_delta_ade_m": float(values.std()),
+        "gat_win_percentage": float(100 * np.mean(values > 0)),
+    }
 
 
 def print_bins(title, bins):
@@ -55,63 +61,87 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint-dir", type=Path, default=PROJECT_ROOT / "checkpoints")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type=Path, help="Optional new JSON summary")
     args = parser.parse_args()
     if not 0 <= args.seed < 2**32:
         parser.error("Expected seed in [0, 2**32)")
     if args.output and args.output.exists():
         parser.error(f"Output already exists: {args.output}")
     set_seed(args.seed)
-    device = torch.device(("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device)
+    device = args.device
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+
+    mlp_checkpoint = args.checkpoint_dir / f"target_mlp_seed{args.seed}_best.pth"
+    gat_checkpoint = args.checkpoint_dir / f"attention_seed{args.seed}_best.pth"
+    mlp = TargetHistoryMLP().to(device)
+    gat = GraphNetworkAttention().to(device)
+    mlp.load_state_dict(torch.load(mlp_checkpoint, map_location=device, weights_only=True), strict=True)
+    gat.load_state_dict(torch.load(gat_checkpoint, map_location=device, weights_only=True), strict=True)
+    mlp.eval()
+    gat.eval()
+
     dataset = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples.pkl"
     with dataset.open("rb") as handle:
         samples = pickle.load(handle)
-    graphs = [sample_to_graph(sample) for sample in samples]
-    models, manifests, provenance = {}, {}, {}
-    for name, cls in (("target_mlp", TargetHistoryMLP), ("attention", GraphNetworkAttention)):
-        checkpoint = args.checkpoint_dir / f"{name}_seed{args.seed}_best.pth"
-        manifest = read_manifest(checkpoint)
-        if manifest["model"] != name or manifest["seed"] != args.seed or manifest["num_modes"] != 1:
-            raise ValueError("Expected matching deterministic checkpoint models/seeds")
-        model = cls().to(device)
-        model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
-        models[name] = model.eval()
-        manifests[name] = manifest
-        provenance[name] = {"checkpoint": str(checkpoint), "checkpoint_sha256": sha256(checkpoint),
-                            "manifest": manifest}
-
-    bins = {"0": [], "1-4": [], "5+": []}
+    count_bins = {"0": [], "1-4": [], "5+": []}
     distance_bins = {"0-10 m": [], "10-20 m": [], "20-35 m": []}
     mlp_ades, gat_ades = [], []
     with torch.no_grad():
-        for sample, graph in zip(samples, graphs):
-            mlp_ade = ade_for_sample(models["target_mlp"], graph, device)
-            gat_ade = ade_for_sample(models["attention"], graph, device)
+        for sample in samples:
+            graph = sample_to_graph(sample)
+            batch = Batch.from_data_list([graph]).to(device)
+            mlp_ade = ade_for_sample(mlp, batch)
+            gat_ade = ade_for_sample(gat, batch)
             mlp_ades.append(mlp_ade)
             gat_ades.append(gat_ade)
-            delta = mlp_ade - gat_ade
+            delta_ade = mlp_ade - gat_ade  # Positive means GAT is better.
+
             # ---- Neighbor-count analysis
             count = len(sample["neighbors_pasts"])
-            bins["0" if count == 0 else "1-4" if count <= 4 else "5+"].append(delta)
+            if count == 0:
+                label = "0"
+            elif count <= 4:
+                label = "1-4"
+            else:
+                label = "5+"
+            count_bins[label].append(delta_ade)
+
             # ---- Nearest-neighbor distance analysis (zero-neighbor samples excluded)
             if len(sample["neighbors_distances"]):
                 distance = min(sample["neighbors_distances"])
-                label = "0-10 m" if distance < 10 else "10-20 m" if distance < 20 else "20-35 m"
-                distance_bins[label].append(delta)
-    overall = {"target_mlp_ADE": float(np.mean(mlp_ades)), "attention_ADE": float(np.mean(gat_ades))}
-    for name in models:
-        if not np.isclose(overall[f"{name}_ADE"], manifests[name]["test_metrics"]["ADE"], atol=.001, rtol=.0001):
-            raise ValueError(f"Test ADE does not reproduce manifest: {name}")
-    result = {"seed": args.seed, "dataset_sha256": sha256(dataset), "checkpoints": provenance,
-              "delta_definition": "MLP ADE minus GAT ADE; positive means GAT wins; ties are not wins",
-              "std_ddof": 0, "manifest_ADE_matches": True, "overall": overall,
-              "neighbor_count": {name: summarize(values) for name, values in bins.items()},
-              "nearest_neighbor_distance": {name: summarize(values) for name, values in distance_bins.items()}}
+                if distance < 10:
+                    label = "0-10 m"
+                elif distance < 20:
+                    label = "10-20 m"
+                else:
+                    label = "20-35 m"
+                distance_bins[label].append(delta_ade)
+
+    count_summary = {}
+    for label, values in count_bins.items():
+        count_summary[label] = summarize(values)
+    distance_summary = {}
+    for label, values in distance_bins.items():
+        distance_summary[label] = summarize(values)
+    result = {
+        "seed": args.seed, "dataset": str(dataset),
+        "mlp_checkpoint": str(mlp_checkpoint), "gat_checkpoint": str(gat_checkpoint),
+        "delta_definition": "MLP ADE minus GAT ADE; positive means GAT wins; ties are not wins",
+        "std_ddof": 0,
+        "overall": {"target_mlp_ADE": float(np.mean(mlp_ades)), "attention_ADE": float(np.mean(gat_ades))},
+        "neighbor_count": count_summary,
+        "nearest_neighbor_distance": distance_summary,
+    }
     print(result["delta_definition"])
-    print_bins("GAT benefit by neighbor count:", result["neighbor_count"])
-    print_bins("GAT benefit by nearest-neighbor distance [0,10), [10,20), [20,35] m:", result["nearest_neighbor_distance"])
+    print(f"Overall ADE: MLP={result['overall']['target_mlp_ADE']:.6f} m | "
+          f"GAT={result['overall']['attention_ADE']:.6f} m")
+    print_bins("GAT benefit by neighbor count:", count_summary)
+    print_bins("GAT benefit by nearest-neighbor distance [0,10), [10,20), [20,35] m:", distance_summary)
     if args.output:
-        write_json(args.output, result)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
 
 
 if __name__ == "__main__":

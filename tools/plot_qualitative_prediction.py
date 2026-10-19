@@ -1,4 +1,4 @@
-"""Plot one test sample using the verified final map-aware GRU checkpoint.
+"""Plot one test sample using a saved map-aware GRU checkpoint.
 
 Example:
     python tools/plot_qualitative_prediction.py --sample-index 6706
@@ -20,10 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_turn_angle_analysis import endpoint_geometry, per_sample_metrics
-from utils.experiment_utils import read_manifest, sha256, write_json
 from utils.graph_utils import sample_to_graph
 from utils.models import GraphNetworkAttentionMultimodalWithMapGRU
-from utils.training_utils import set_seed
+from utils.training_utils import read_manifest, set_seed
 
 
 def main():
@@ -35,19 +34,8 @@ def main():
     parser.add_argument("--show", action="store_true", help="Open a plot window instead of saving PNG/JSON")
     args = parser.parse_args()
     manifest = read_manifest(args.checkpoint)
-    if (manifest.get("model") != "multimodal_map_gru" or manifest.get("num_modes") != 6
-            or manifest.get("num_epochs") != 60 or manifest.get("smoke_test", False)):
-        raise ValueError("Expected a fully trained, six-mode final GRU checkpoint")
     seed = manifest["seed"]
-    reference = json.loads((PROJECT_ROOT / "doc/results/final_decoder_multiseed_comparison.json").read_text())
-    expected_hash = reference["runs"]["gru"][str(seed)]["checkpoint_sha256"]
-    checkpoint_hash = sha256(args.checkpoint)
-    if checkpoint_hash != expected_hash:
-        raise ValueError("Checkpoint differs from the validated matched experiment")
     dataset = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
-    dataset_hash = sha256(dataset)
-    if dataset_hash != reference["dataset_sha256"]["test"]:
-        raise ValueError("Test dataset differs from the validated experiment")
     if args.output is None:
         args.output = PROJECT_ROOT / f"doc/figures/qualitative_gru_seed{seed}_sample{args.sample_index}.png"
     if args.output.suffix.lower() != ".png":
@@ -119,8 +107,8 @@ def main():
     displacement, angle = endpoint_geometry(future)
     metadata = {"model": type(model).__name__, "seed": seed,
                 "num_epochs": manifest["num_epochs"], "best_epoch": manifest["best_epoch"],
-                "checkpoint": str(args.checkpoint), "checkpoint_sha256": checkpoint_hash,
-                "dataset": str(dataset), "dataset_sha256": dataset_hash,
+                "checkpoint": str(args.checkpoint),
+                "dataset": str(dataset),
                 "sample_index": args.sample_index,
                 "sample_token": sample["sample_token"],
                 "target_instance_token": sample["target_instance_token"],
@@ -131,11 +119,13 @@ def main():
                 "prediction_xy": predictions.tolist(), "ground_truth_xy": future.tolist(),
                 "selection": f"Explicit sample index {args.sample_index}; no performance-based selection"}
     if not args.show:
-        write_json(args.output.with_suffix(".json"), metadata)
-    print(f"Sample {args.sample_index} | GRU seed {seed}, best epoch {manifest['best_epoch']}/60")
+        args.output.with_suffix(".json").write_text(
+            json.dumps(metadata, indent=2, allow_nan=False) + "\n"
+        )
+    print(f"Sample {args.sample_index} | GRU seed {seed}, best epoch {manifest['best_epoch']}/{manifest['num_epochs']}")
     print(f"minADE6={ades.min():.6f} m (mode {best}); minFDE6={fdes.min():.6f} m (mode {fdes.argmin()})")
     if not args.show:
-        print(f"Saved {args.output} and provenance JSON")
+        print(f"Saved {args.output} and prediction JSON")
     if args.show:
         plt.show()
     plt.close(fig)
