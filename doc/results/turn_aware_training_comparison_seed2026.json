@@ -1,0 +1,147 @@
+{
+  "seed": 2026,
+  "epochs": 60,
+  "method": "Train-only WeightedRandomSampler with replacement",
+  "change_definition": "turn-aware minus baseline; negative means improvement",
+  "best_epoch": 29,
+  "validation_metrics": {
+    "minADE6": 1.6284149885177612,
+    "minFDE6": 3.387648344039917
+  },
+  "overall_test": {
+    "minADE6": {
+      "baseline": 1.5277539719862194,
+      "turn_aware": 1.560114610982399,
+      "change_m": 0.03236063899617947,
+      "percentage_change": 2.1181839215975127
+    },
+    "minFDE6": {
+      "baseline": 3.115541103809354,
+      "turn_aware": 3.1611526241755943,
+      "change_m": 0.04561152036624039,
+      "percentage_change": 1.4639999552717007
+    }
+  },
+  "turn_bins": {
+    "0-15 deg": {
+      "n": 6022,
+      "minADE6": {
+        "baseline": 1.31538915327323,
+        "turn_aware": 1.384869165983322,
+        "change_m": 0.06948001271009208,
+        "percentage_change": 5.282088006974756
+      },
+      "minFDE6": {
+        "baseline": 2.5093934850681268,
+        "turn_aware": 2.714967505794794,
+        "change_m": 0.20557402072666742,
+        "percentage_change": 8.192179582433495
+      }
+    },
+    "15-30 deg": {
+      "n": 381,
+      "minADE6": {
+        "baseline": 2.395071717384919,
+        "turn_aware": 2.3745052633010184,
+        "change_m": -0.020566454083900787,
+        "percentage_change": -0.8586988829861202
+      },
+      "minFDE6": {
+        "baseline": 5.864169846134861,
+        "turn_aware": 5.3234957112023835,
+        "change_m": -0.5406741349324777,
+        "percentage_change": -9.219960354471008
+      }
+    },
+    "30-60 deg": {
+      "n": 534,
+      "minADE6": {
+        "baseline": 3.1306483196408563,
+        "turn_aware": 2.7674174821667012,
+        "change_m": -0.3632308374741551,
+        "percentage_change": -11.602415870072063
+      },
+      "minFDE6": {
+        "baseline": 7.6080390316040045,
+        "turn_aware": 6.103398674296752,
+        "change_m": -1.5046403573072524,
+        "percentage_change": -19.776979995198957
+      }
+    },
+    "60+ deg": {
+      "n": 87,
+      "minADE6": {
+        "baseline": 3.9452075012798966,
+        "turn_aware": 4.004105816627371,
+        "change_m": 0.05889831534747447,
+        "percentage_change": 1.4929079225456912
+      },
+      "minFDE6": {
+        "baseline": 9.365035404761633,
+        "turn_aware": 9.67120355025105,
+        "change_m": 0.3061681454894174,
+        "percentage_change": 3.2692684251225237
+      }
+    }
+  },
+  "sampling": {
+    "method": "WeightedRandomSampler",
+    "replacement": true,
+    "samples_per_epoch": 25711,
+    "groups": {
+      "stationary (<5 m)": {
+        "weight": 1.0,
+        "original_n": 800,
+        "original_percentage": 3.1115086927774103,
+        "expected_percentage": 2.7665387142511326,
+        "first_epoch_draws": 714,
+        "first_epoch_percentage": 2.777021508303839
+      },
+      "0-15 deg": {
+        "weight": 1.0,
+        "original_n": 20605,
+        "original_percentage": 80.14079576834818,
+        "expected_percentage": 71.25566275893074,
+        "first_epoch_draws": 18346,
+        "first_epoch_percentage": 71.35467309711797
+      },
+      "15-30 deg": {
+        "weight": 1.0,
+        "original_n": 1768,
+        "original_percentage": 6.876434211038077,
+        "expected_percentage": 6.114050558495003,
+        "first_epoch_draws": 1567,
+        "first_epoch_percentage": 6.094667651977753
+      },
+      "30-60 deg": {
+        "weight": 2.0,
+        "original_n": 2204,
+        "original_percentage": 8.572206448601765,
+        "expected_percentage": 15.24362831552374,
+        "first_epoch_draws": 3897,
+        "first_epoch_percentage": 15.156936719691961
+      },
+      "60+ deg": {
+        "weight": 4.0,
+        "original_n": 334,
+        "original_percentage": 1.2990548792345689,
+        "expected_percentage": 4.620119652799391,
+        "first_epoch_draws": 1187,
+        "first_epoch_percentage": 4.616701022908483
+      }
+    },
+    "preview_unique_samples": 15848,
+    "preview_draw_indices_sha256": "5b28b686f09af8ac0d9a965692de6bfa687ddec0a251b45f9295d8e43725c50f",
+    "validation_and_test_sampling": "Sequential, unweighted; all examples once",
+    "batches_per_epoch": 402
+  },
+  "baseline_checkpoint_sha256": "fa2b5df8ffb99931adefb2bdc87ed9a8fac3a051bf6ab2e251e123e886ae082a",
+  "turn_aware_checkpoint_sha256": "235847de6accf99c70b11dee287a6aa4ea28ae19073e0cad6021876765c16821",
+  "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+  "checks": {
+    "manifest_matches": true,
+    "shared_evaluator_matches": true,
+    "same_test_dataset": true,
+    "unchanged_model_graph_training_code": true
+  }
+}

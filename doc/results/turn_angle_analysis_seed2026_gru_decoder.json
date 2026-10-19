@@ -1,0 +1,116 @@
+{
+  "model": "GraphNetworkAttentionMultimodalWithMapGRU",
+  "seed": 2026,
+  "checkpoint": "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.pth",
+  "checkpoint_sha256": "82228fdb5668eaa4905aa0008a0b08eb0e8ec30ae4fc7fe36eca17317dbde8d5",
+  "dataset": "/home/danilo/Desktop/gnn_trajectory/data/processed/nuscenes_test_prediction_samples_map.pkl",
+  "dataset_sha256": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df",
+  "device": "cpu",
+  "batch_size": 64,
+  "torch_version": "2.14.1+cu130",
+  "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
+  "minimum_endpoint_displacement_m": 5.0,
+  "std_ddof": 0,
+  "input_samples": 7242,
+  "invalid_sample_indices": [],
+  "excluded_displacement_below_5m": 218,
+  "full_test": {
+    "n": 7242,
+    "minADE6": {
+      "mean": 1.45292280243596,
+      "median": 1.149294674396515,
+      "std": 1.1794069358485275
+    },
+    "minFDE6": {
+      "mean": 2.872185738319176,
+      "median": 2.1064505577087402,
+      "std": 2.8573478995436563
+    }
+  },
+  "non_stationary": {
+    "n": 7024,
+    "minADE6": {
+      "mean": 1.470345197260329,
+      "median": 1.1625199913978577,
+      "std": 1.185086479987841
+    },
+    "minFDE6": {
+      "mean": 2.915708798343347,
+      "median": 2.143244743347168,
+      "std": 2.877824856062314
+    }
+  },
+  "turn_bins": {
+    "0-15 deg": {
+      "n": 6022,
+      "minADE6": {
+        "mean": 1.2801352739160894,
+        "median": 1.0852975249290466,
+        "std": 0.8761859571913263
+      },
+      "minFDE6": {
+        "mean": 2.424226491205003,
+        "median": 1.971409022808075,
+        "std": 1.9573552463489128
+      }
+    },
+    "15-30 deg": {
+      "n": 381,
+      "minADE6": {
+        "mean": 2.3081956823354006,
+        "median": 2.0236361026763916,
+        "std": 1.3032133322457373
+      },
+      "minFDE6": {
+        "mean": 5.4476010915859945,
+        "median": 4.416244983673096,
+        "std": 3.670690666192642
+      }
+    },
+    "30-60 deg": {
+      "n": 534,
+      "minADE6": {
+        "mean": 2.646420378140296,
+        "median": 1.9830223321914673,
+        "std": 2.074559986680716
+      },
+      "minFDE6": {
+        "mean": 5.666942539119096,
+        "median": 3.890953540802002,
+        "std": 5.3088839246295345
+      }
+    },
+    "60+ deg": {
+      "n": 87,
+      "minADE6": {
+        "mean": 3.7484943578983176,
+        "median": 3.2986667156219482,
+        "std": 2.6713573429401767
+      },
+      "minFDE6": {
+        "mean": 8.960498134980256,
+        "median": 8.688908576965332,
+        "std": 6.607406877373013
+      }
+    }
+  },
+  "sanity_check": {
+    "shared_evaluator_matches": true,
+    "manifest": "checkpoints_gru_decoder/multimodal_map_gru_seed2026_best.json",
+    "manifest_num_epochs": 60,
+    "manifest_test_metrics": {
+      "minADE6": 1.4529227018356323,
+      "minFDE6": 2.872185707092285
+    },
+    "full_test_minus_manifest": {
+      "minADE6": 1.006003276238232e-07,
+      "minFDE6": 3.122689085088837e-08
+    },
+    "manifest_matches": true,
+    "tolerance": {
+      "atol_m": 0.001,
+      "rtol": 0.0001
+    },
+    "note": "Manifest comparison uses full test, not displacement-filtered subset. Execution stops before turn bins if manifest metrics do not match."
+  }
+}
