@@ -13,14 +13,19 @@ constraint,loss}.py), adapted to the issue #18 metrics:
   checked also includes the next 3 ground-truth points, as the paper text
   describes (theta = 0 if no theta passes)
 - the perturbed current position becomes the new frame origin, so every
-  node is re-centred and edge attributes are recomputed differentiably
+  node and lane-centreline point is re-centred and edge attributes are
+  recomputed differentiably (the set of lanes within 50 m stays fixed)
 - objectives: ade / fde (on minADE6 / minFDE6, squared as in the original
   loss) and left / right / front / rear deviation of the min-ADE candidate
+
+Map-aware models read the *_map datasets, which hold the same samples in the
+same order as the plain ones, so the same --num-samples draw is comparable.
 
 Example usage:
     python scripts/adversarial_attack.py
     python scripts/adversarial_attack.py --models multimodal:42 --num-samples 100
     python scripts/adversarial_attack.py --models multimodal:42 --tag _seed42   # one run per process
+    python scripts/adversarial_attack.py --models multimodal_map_gru:42 --tag _map_gru_seed42
     python scripts/adversarial_attack.py --merge data/processed/adversarial/results_val_b3_seed*.json
 """
 
@@ -46,11 +51,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from utils.experiment_utils import sha256
 from utils.graph_utils import sample_to_graph
 from utils.baselines import ConstantVelocityBaseline
 from utils.models import (
     GraphNetworkAttention,
     GraphNetworkAttentionMultimodal,
+    GraphNetworkAttentionMultimodalWithMap,
+    GraphNetworkAttentionMultimodalWithMapGRU,
     TargetHistoryMLP,
 )
 
@@ -74,7 +82,11 @@ MODEL_CLASSES = {
     "multimodal": lambda: GraphNetworkAttentionMultimodal(num_modes=6),
     "attention": GraphNetworkAttention,
     "target_mlp": TargetHistoryMLP,
+    "multimodal_map": GraphNetworkAttentionMultimodalWithMap,
+    "multimodal_map_gru": GraphNetworkAttentionMultimodalWithMapGRU,
 }
+MAP_MODELS = {"multimodal_map", "multimodal_map_gru"}
+CHECKPOINT_DIRS = [PROJECT_ROOT / d for d in ("checkpoints", "checkpoints_60ep", "checkpoints_gru_decoder")]
 
 # Reference categorical palette (light mode) and chart ink
 BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
@@ -85,13 +97,27 @@ SURFACE = "#fcfcfb"
 # MODEL INPUTS
 # ========================================================
 
-def load_model(spec, checkpoint_dir):
+def uses_map(specs):
+    return any(spec.split(":")[0] in MAP_MODELS for spec in specs)
+
+
+def checkpoint_path(spec, checkpoint_dirs):
+    """The one '<name>_seed<seed>_best.pth' under the given dirs (any depth); None for 'cv'."""
+    if spec == "cv":
+        return None
+    name, seed = spec.split(":")
+    matches = [p for d in checkpoint_dirs if d.is_dir() for p in d.rglob(f"{name}_seed{seed}_best.pth")]
+    if len(matches) != 1:
+        raise FileNotFoundError(f"{spec}: expected one checkpoint, found {[str(p) for p in matches]}")
+    return matches[0]
+
+
+def load_model(spec, checkpoint_dirs):
     """spec is 'cv' or '<name>:<seed>', e.g. 'multimodal:42'."""
     if spec == "cv":
         return ConstantVelocityBaseline()
-    name, seed = spec.split(":")
-    model = MODEL_CLASSES[name]()
-    path = checkpoint_dir / f"{name}_seed{seed}_best.pth"
+    model = MODEL_CLASSES[spec.split(":")[0]]()
+    path = checkpoint_path(spec, checkpoint_dirs)
     model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     for p in model.parameters():
@@ -120,6 +146,10 @@ def perturbed_forward(model, batch, delta):
     perturbed = copy.copy(batch)
     perturbed.x = torch.cat([new_pos.reshape(-1, 10), batch.x[:, 10:]], dim=1)
     perturbed.edge_attr = torch.cat([rel, dist], dim=1)
+
+    # Lane points stay fixed in the world, so they move by the same re-centring shift
+    lane_graph = torch.repeat_interleave(torch.arange(len(batch.num_map_lanes)), batch.num_map_lanes)
+    perturbed.map_points = batch.map_points - delta[:, -1, :][lane_graph[batch.map_lane_index]]
 
     pred = model(perturbed)
     if pred.ndim == 3:
@@ -297,9 +327,13 @@ def plot_examples(examples, path):
 # MAIN
 # ========================================================
 
-def load_samples(split):
-    path = PROJECT_ROOT / "data" / "processed" / f"nuscenes_{split}_prediction_samples.pkl"
-    with open(path, "rb") as f:
+def dataset_path(split, use_map=False):
+    suffix = "_map" if use_map else ""
+    return PROJECT_ROOT / "data" / "processed" / f"nuscenes_{split}_prediction_samples{suffix}.pkl"
+
+
+def load_samples(split, use_map=False):
+    with open(dataset_path(split, use_map), "rb") as f:
         return pickle.load(f)
 
 
@@ -321,7 +355,8 @@ def main():
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--boundary-points", type=int, default=3,
                         help="ground-truth future points included in the physical check (0 = original code)")
-    parser.add_argument("--checkpoint-dir", type=Path, default=PROJECT_ROOT / "checkpoints")
+    parser.add_argument("--checkpoint-dir", nargs="+", type=Path, default=CHECKPOINT_DIRS,
+                        help="searched recursively for <name>_seed<seed>_best.pth")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "data" / "processed" / "adversarial")
     parser.add_argument("--figure-dir", type=Path, default=PROJECT_ROOT / "doc" / "figures" / "adversarial")
     parser.add_argument("--tag", default="", help="suffix for output files, e.g. _seed42 for parallel runs")
@@ -333,7 +368,7 @@ def main():
 
     if args.control_only:
         results = json.loads(args.control_only.read_text())
-        samples = load_samples(results["split"])
+        samples = load_samples(results["split"], results.get("map_data", False))
         batch, clean_past, future = build_inputs([samples[i] for i in results["sample_indices"]])
         future_head = future[:, :results["boundary_points"]]
         for spec, entry in results["models"].items():
@@ -348,7 +383,11 @@ def main():
     if args.merge:
         merged = json.loads(args.merge[0].read_text())
         for path in args.merge[1:]:
-            merged["models"].update(json.loads(path.read_text())["models"])
+            other = json.loads(path.read_text())
+            for key in ("split", "sample_indices", "restarts", "iters", "boundary_points"):
+                if other[key] != merged[key]:
+                    raise ValueError(f"{path}: {key} differs from {args.merge[0]}")
+            merged["models"].update(other["models"])
         name = f"results_{merged['split']}_b{merged['boundary_points']}{args.tag}"
         (args.output_dir / f"{name}.json").write_text(json.dumps(merged, indent=2) + "\n")
         write_report(merged, args.output_dir / f"{name}.md")
@@ -358,7 +397,8 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.figure_dir.mkdir(parents=True, exist_ok=True)
 
-    samples = load_samples(args.split)
+    use_map = uses_map(args.models)
+    samples = load_samples(args.split, use_map)
     chosen = np.sort(np.random.default_rng(0).choice(len(samples), args.num_samples, replace=False))
     samples = [samples[i] for i in chosen]
     batch, clean_past, future = build_inputs(samples)
@@ -369,7 +409,9 @@ def main():
     print(f"{args.split}: {len(samples)} samples; clean trace within physical bounds: {attackable.float().mean():.1%}")
 
     results = {
-        "split": args.split, "num_samples": len(samples), "sample_indices": chosen.tolist(),
+        "split": args.split, "map_data": use_map, "dataset": dataset_path(args.split, use_map).name,
+        "dataset_sha256": sha256(dataset_path(args.split, use_map)),
+        "num_samples": len(samples), "sample_indices": chosen.tolist(),
         "restarts": args.restarts, "iters": args.iters, "boundary_points": args.boundary_points,
         "deviation_bound_m": DEVIATION_BOUND, "physical_bounds": PHYSICAL_BOUNDS,
         "half_lane_width_m": HALF_LANE_WIDTH,
@@ -386,7 +428,10 @@ def main():
             clean = sample_metrics(perturbed_forward(model, batch, torch.zeros_like(clean_past)),
                                    future, forward, left)
 
-        entry = {"clean": {k: float(v.mean()) for k, v in clean.items()}, "attacked": {},
+        path = checkpoint_path(spec, args.checkpoint_dir)
+        entry = {"checkpoint": str(path.relative_to(PROJECT_ROOT)) if path else None,
+                 "checkpoint_sha256": sha256(path) if path else None,
+                 "clean": {k: float(v.mean()) for k, v in clean.items()}, "attacked": {},
                  "clean_beyond_half_lane": {d: float((clean[d] > HALF_LANE_WIDTH).float().mean()) for d in DIRECTIONS},
                  "attacked_beyond_half_lane": {}, "perturbation": {}, "all_metrics_under_attack": {}}
         deltas = {}
@@ -447,8 +492,9 @@ def main():
 
 
 def write_report(results, md_path):
+    dataset = f" (`{results['dataset']}`)" if "dataset" in results else ""
     md = ["# White-box PGD attack: results", "",
-          f"{results['split']} split, {results['num_samples']} random samples; perturbation on all 5 observed "
+          f"{results['split']} split{dataset}, {results['num_samples']} random samples; perturbation on all 5 observed "
           f"target positions, ≤ {DEVIATION_BOUND} m per point, nuScenes physical bounds from the original code, "
           f"{results['boundary_points']} ground-truth future points included in the physical check; "
           f"{results['restarts']} restarts × {results['iters']} steps. Each column is attacked with its own "
