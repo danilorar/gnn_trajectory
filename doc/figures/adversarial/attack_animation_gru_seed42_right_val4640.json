@@ -1,0 +1,38 @@
+{
+  "model": "multimodal_map_gru:42",
+  "checkpoint": "checkpoints_gru_decoder/seed42/multimodal_map_gru_seed42_best.pth",
+  "checkpoint_sha256": "503d7cc0549d62f96580345476bd60a84b6ab64e4b9ebb5f5cdf1a65c07a6d80",
+  "dataset_sha256": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+  "attack_results": "data/processed/adversarial_modes/results_val_b3_multimodal_map_gru_seed42.json",
+  "objective": "right",
+  "val_index": 4640,
+  "sample_token": "ee86abd1dd784bd6a230ee267acb8ab4",
+  "scene": "scene-0241",
+  "scene_description": "Overtake large truck, peds, parked bicycle",
+  "perturbation_mean_point_m": 0.14520590007305145,
+  "perturbation_max_point_m": 0.2377656102180481,
+  "metrics": {
+    "clean": {
+      "ade": 0.9867039322853088,
+      "fde": 3.352247953414917,
+      "left": -0.4907724857330322,
+      "right": 0.4907724857330322,
+      "front": 0.4950467050075531,
+      "rear": -0.4950467050075531
+    },
+    "attacked": {
+      "ade": 3.9793624877929688,
+      "fde": 7.28525972366333,
+      "left": -3.9613635540008545,
+      "right": 3.9613635540008545,
+      "front": -0.09036644548177719,
+      "rear": 0.09036644548177719
+    }
+  },
+  "best_mode": {
+    "clean": 3,
+    "attacked": 1
+  },
+  "camera_images_missing": [],
+  "selection": "Chosen for visual clarity among the attacked val samples where the lateral attack moves the min-ADE mode more than half a lane width, the clean prediction is accurate and the target is visible in CAM_FRONT at t = 0; not representative of all samples."
+}
