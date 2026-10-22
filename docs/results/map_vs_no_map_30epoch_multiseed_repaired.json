@@ -1,0 +1,238 @@
+{
+  "description": "30-epoch multimodal MLP map/no-map comparison with newly trained replacement map seed42; no GRU retraining",
+  "seeds": [
+    42,
+    123,
+    2026
+  ],
+  "epochs": 30,
+  "batch_size": 64,
+  "optimizer": "Adam",
+  "learning_rate": 0.001,
+  "radius_m": 35,
+  "num_modes": 6,
+  "std_convention": "Population standard deviation across three seeds (ddof=0)",
+  "metrics": "minADE6 and minFDE6 minimized independently across six modes",
+  "dataset_sha256": {
+    "train": {
+      "no_map": "740eba9085ca6e449c94e1960303216775b6dc7671b9eba66e1d5ca65068ea2a",
+      "map": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052"
+    },
+    "val": {
+      "no_map": "f613fb7f139b0be9e480ad39cffbf831d580839bed52746e101db744845119ba",
+      "map": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef"
+    },
+    "test": {
+      "no_map": "c03b39add94bc63f89ee9435fd3fdff9f36e11410be7153977dbd2d78678d31f",
+      "map": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+    }
+  },
+  "split_alignment": {
+    "train": {
+      "samples": 25711,
+      "identities_and_nonmap_features_match": true,
+      "absolute_tolerance": 1e-06
+    },
+    "val": {
+      "samples": 6685,
+      "identities_and_nonmap_features_match": true,
+      "absolute_tolerance": 1e-06
+    },
+    "test": {
+      "samples": 7242,
+      "identities_and_nonmap_features_match": true,
+      "absolute_tolerance": 1e-06
+    }
+  },
+  "runs": [
+    {
+      "group": "no_map",
+      "seed": 42,
+      "test_minADE6": 1.7038379907608032,
+      "test_minFDE6": 3.625744342803955,
+      "checkpoint": "data/processed/multimodal_seed_check/seed42_best_model.pth",
+      "checkpoint_sha256": "462496a1fbd6061de7fb981e69b56d4eb9beebbdd407873acbc67ec40a46b2a3",
+      "manifest": null,
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": false
+    },
+    {
+      "group": "no_map",
+      "seed": 123,
+      "test_minADE6": 1.717576265335083,
+      "test_minFDE6": 3.6921446323394775,
+      "checkpoint": "data/processed/multimodal_seed_check/seed123_best_model.pth",
+      "checkpoint_sha256": "a96333051d68dc2ff8a1457b94959d3c1ee99d7aa2a7d70b81d613f9805a1928",
+      "manifest": null,
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": false
+    },
+    {
+      "group": "no_map",
+      "seed": 2026,
+      "test_minADE6": 1.7211222648620605,
+      "test_minFDE6": 3.6402838230133057,
+      "checkpoint": "data/processed/multimodal_seed_check/seed2026_best_model.pth",
+      "checkpoint_sha256": "438e6d63bbecd7fa83825d7e08c2305598dc975d1d853b4a221a68ea6f893ecc",
+      "manifest": null,
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": false
+    },
+    {
+      "group": "map",
+      "seed": 42,
+      "test_minADE6": 1.5621178150177002,
+      "test_minFDE6": 3.1704936027526855,
+      "checkpoint": "checkpoints_map30_repair/seed42/multimodal_map_seed42_best.pth",
+      "checkpoint_sha256": "f367eb85a417dabc960eeb54dba0d256ec89e73b10c40980563d10bdf4e4dec5",
+      "manifest": {
+        "checkpoint": "/home/danilo/Desktop/gnn_trajectory/checkpoints_map30_repair/seed42/multimodal_map_seed42_best.pth",
+        "torch_version": "2.14.1+cu130",
+        "torch_geometric_version": "2.8.0.post1",
+        "model": "multimodal_map",
+        "model_class": "GraphNetworkAttentionMultimodalWithMap",
+        "seed": 42,
+        "radius": 35,
+        "num_modes": 6,
+        "num_epochs": 30,
+        "best_epoch": 28,
+        "best_val_loss": 1.6565556384416864,
+        "batch_size": 64,
+        "lr": 0.001,
+        "device": "cuda",
+        "validation_metrics": {
+          "minADE6": 1.6565556526184082,
+          "minFDE6": 3.473069190979004
+        },
+        "test_metrics": {
+          "minADE6": 1.5621178150177002,
+          "minFDE6": 3.1704936027526855
+        },
+        "sampling": "Standard uniform shuffle without replacement; unmodified validation/test",
+        "dataset_sha256": {
+          "train": "3ad34a8f93cecaa116510c249c79f391d0b8625ebe370bdfa5c1f0537585a052",
+          "val": "eb21aa7aea95c92bcb5f76f300f85ba077aa4e4018f820d31b596b1a8f2813ef",
+          "test": "56b1d8711ca20e6c9c42b518af048b46418878743fe6b1c4c144cf540d47b9df"
+        },
+        "source_sha256": {
+          "utils/models.py": "f51429b44709fbd4273b783c327126ae7309d32e60ef0eba9cc54e7f864d8f54",
+          "utils/graph_utils.py": "7ea0adbf593dcdc7f577088091c216b4141df74b87963e832c34103229e89a89",
+          "utils/training_utils.py": "37f4427bcb2eb0ae8cccb23d7ef9b6b9fe7d05c4fe15514aab4fb2126b43fd37",
+          "scripts/train_model.py": "e6c7562fff03520c59c7fa1de8259984f2d9fbe69819b4a54ed7ee822c0b7bf1"
+        },
+        "checkpoint_sha256": "f367eb85a417dabc960eeb54dba0d256ec89e73b10c40980563d10bdf4e4dec5",
+        "replacement_for_missing_30epoch_seed42": true
+      },
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": true
+    },
+    {
+      "group": "map",
+      "seed": 123,
+      "test_minADE6": 1.567762017250061,
+      "test_minFDE6": 3.200676679611206,
+      "checkpoint": "checkpoints/multimodal_map_seed123_best.pth",
+      "checkpoint_sha256": "cb3bf0ccc425c4a9fcee041e4731d553b59a0c9a6728e9724792049b17c33d72",
+      "manifest": {
+        "checkpoint": "/home/danilo/Desktop/gnn_trajectory/checkpoints/multimodal_map_seed123_best.pth",
+        "torch_version": "2.14.1+cu130",
+        "torch_geometric_version": "2.8.0.post1",
+        "model": "multimodal_map",
+        "seed": 123,
+        "radius": 35,
+        "num_modes": 6,
+        "num_epochs": 30,
+        "best_epoch": 27,
+        "best_val_loss": 1.6628601558367173,
+        "batch_size": 64,
+        "lr": 0.001,
+        "device": "cuda",
+        "validation_metrics": {
+          "minADE6": 1.6628602743148804,
+          "minFDE6": 3.5442750453948975
+        },
+        "test_metrics": {
+          "minADE6": 1.567762017250061,
+          "minFDE6": 3.200676679611206
+        }
+      },
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": false
+    },
+    {
+      "group": "map",
+      "seed": 2026,
+      "test_minADE6": 1.5352756977081299,
+      "test_minFDE6": 3.1163103580474854,
+      "checkpoint": "checkpoints/multimodal_map_seed2026_best.pth",
+      "checkpoint_sha256": "fc9286f38a51963ab84d5fbc7b5b89ea6d54011689794bcde1d6eb7a12c5c9c6",
+      "manifest": {
+        "checkpoint": "/home/danilo/Desktop/gnn_trajectory/checkpoints/multimodal_map_seed2026_best.pth",
+        "torch_version": "2.14.1+cu130",
+        "torch_geometric_version": "2.8.0.post1",
+        "model": "multimodal_map",
+        "seed": 2026,
+        "radius": 35,
+        "num_modes": 6,
+        "num_epochs": 30,
+        "best_epoch": 29,
+        "best_val_loss": 1.6461391166866761,
+        "batch_size": 64,
+        "lr": 0.001,
+        "device": "cuda",
+        "validation_metrics": {
+          "minADE6": 1.646139144897461,
+          "minFDE6": 3.4726877212524414
+        },
+        "test_metrics": {
+          "minADE6": 1.5352756977081299,
+          "minFDE6": 3.1163103580474854
+        }
+      },
+      "minADE6_reproduces_saved_result": true,
+      "replacement_run": false
+    }
+  ],
+  "aggregate": {
+    "no_map": {
+      "test_minADE6": {
+        "mean": 1.7141788403193157,
+        "std": 0.00745401034589973,
+        "ddof": 0
+      },
+      "test_minFDE6": {
+        "mean": 3.652724266052246,
+        "std": 0.02849939274036255,
+        "ddof": 0
+      }
+    },
+    "map": {
+      "test_minADE6": {
+        "mean": 1.5550518433252971,
+        "std": 0.014172419372699368,
+        "ddof": 0
+      },
+      "test_minFDE6": {
+        "mean": 3.1624935468037925,
+        "std": 0.034903865353638104,
+        "ddof": 0
+      }
+    }
+  },
+  "improvement": {
+    "test_minADE6": {
+      "absolute_reduction_m": 0.15912699699401855,
+      "percent_reduction": 9.282986888601222
+    },
+    "test_minFDE6": {
+      "absolute_reduction_m": 0.49023071924845363,
+      "percent_reduction": 13.420961549289899
+    }
+  },
+  "caveats": [
+    "Historical map seed42 weights were overwritten. This replacement is newly trained and is not recovery of the old 1.542 result.",
+    "Only map seed42 was retrained; map123/map2026 and all no-map weights are historical checkpoints.",
+    "Historical no-map runs used CPU; map runs used CUDA. This is not a new experiment rerunning both groups under one runtime/device.",
+    "The no-map historical FDE-at-ADE-best field is not minFDE6; the FDE figures here were independently re-evaluated."
+  ]
+}

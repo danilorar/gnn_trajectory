@@ -28,3 +28,6 @@ data/processed/radius_sweep/**/*.pth
 
 # Multimodal multi-seed checkpoints
 data/processed/multimodal_seed_check/*.pth
+
+# Local camera-image exports and shareable bundles
+/data/camera_exports/
