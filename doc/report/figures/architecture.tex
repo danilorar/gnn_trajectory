@@ -1,0 +1,93 @@
+% Predictor and PGD loop; compact version of the poster's method diagram. Needs \slab and the
+% cleanC / attackC / predC / laneC colours from the report preamble.
+\begin{tikzpicture}[font=\scriptsize, line cap=round,
+		frame/.style={draw=black!45, dashed, line width=0.5pt, rounded corners=3pt},
+		ftitle/.style={font=\scriptsize\bfseries, anchor=south west, inner sep=1.5pt},
+		lab/.style={align=center, anchor=north, inner sep=0.5pt},
+		dim/.style={text=black!55, anchor=north, inner sep=0.5pt},
+		flow/.style={-{Stealth[length=3.5pt, width=3pt]}, line width=0.6pt, black!60},
+		atk/.style={-{Stealth[length=4pt, width=3.5pt]}, line width=0.8pt, attackC},
+		op/.style={circle, draw=black!65, fill=white, line width=0.5pt, inner sep=0pt, minimum size=0.38cm},
+		pgd/.style={draw=attackC, fill=attackC!8, line width=0.6pt, rounded corners=2pt, align=center, inner sep=2.5pt},
+		gnode/.style={circle, fill, inner sep=1.2pt}]
+	% ---------------- agent interaction encoder
+	\draw[frame] (0, 2.6) rectangle (7.25, 4.7);
+	\node[ftitle] at (0, 4.7) {Agent interaction encoder};
+	% target with its observed past (orange: the only input the attacker changes) among real neighbours (grey)
+	\foreach \a/\b in {0.35/4.35, 1.0/4.42, 0.45/3.35} \draw[black!35, line width=0.5pt] (1.3, 3.75) -- (\a, \b);
+	\draw[black!35, line width=0.5pt] (0.35, 4.35) -- (1.0, 4.42);
+	\foreach \a/\b in {0.35/4.35, 1.0/4.42, 0.45/3.35} \node[gnode, black!45] at (\a, \b) {};
+	\draw[attackC, line width=1pt] plot[smooth] coordinates {(0.15, 3.7) (0.5, 3.83) (0.9, 3.68) (1.3, 3.75)};
+	\foreach \a/\b in {0.15/3.7, 0.5/3.83, 0.9/3.68} \node[gnode, attackC, inner sep=1pt] at (\a, \b) {};
+	\node[gnode, attackC, inner sep=1.7pt] at (1.3, 3.75) {};
+	\node[lab] (L) at (0.75, 3.2) {Agents};
+	\node[dim] at (L.south) {$N{\times}15$};
+	\slab{mlp}{2.1}{3.75}{0.75}{cleanC!25}
+	\slab{gat1}{3.75}{3.75}{0.75}{cleanC!55}
+	\slab{gat2}{5.0}{3.75}{0.75}{cleanC!55}
+	\slab{tgt}{6.45}{3.75}{0.5}{cleanC!25}
+	\draw[flow] (1.5, 3.75) -- (mlp-in);
+	\draw[flow] (mlp-out) -- (gat1-in);
+	\draw[flow] (gat1-out) -- (gat2-in);
+	\draw[flow] (gat2-out) -- (tgt-in);
+	\foreach \x/\n/\d in {2.2/Shared MLP/N{\times}64, 3.65/GATv2/N{\times}64, 5.1/GATv2/N{\times}64, 6.55/Target/64} {
+		\node[lab] (L) at (\x, 3.2) {\n};
+		\node[dim] at (L.south) {$\d$};
+	}
+	% ---------------- map encoder
+	\draw[frame] (0, 0.05) rectangle (7.25, 2.2);
+	\node[ftitle] at (0, 2.2) {Map encoder};
+	\foreach \y in {1.05, 1.5} {
+		\draw[laneC, line width=0.8pt] plot[smooth] coordinates {(0.15, \y) (0.5, {\y+0.04}) (0.9, {\y+0.12}) (1.3, {\y+0.24})};
+		\foreach \x/\d in {0.15/0, 0.5/0.04, 0.9/0.12, 1.3/0.24} \node[gnode, laneC, inner sep=1pt] at (\x, {\y+\d}) {};
+	}
+	\slab{pmlp}{2.1}{1.3}{0.55}{laneC!45}
+	\slab{lpool}{3.55}{1.3}{0.55}{black!18}
+	\slab{spool}{5.0}{1.3}{0.4}{black!18}
+	\draw[flow] (1.5, 1.3) -- (pmlp-in);
+	\draw[flow] (pmlp-out) -- (lpool-in);
+	\draw[flow] (lpool-out) -- (spool-in);
+	\foreach \x/\n/\d in {0.75/Lane points/P{\times}2, 2.2/Point MLP/P{\times}32, 3.65/Lane pool/L{\times}32, 5.1/Scene pool/32} {
+		\node[lab] (L) at (\x, 0.8) {\n};
+		\node[dim] at (L.south) {$\d$};
+	}
+	% ---------------- context and candidate embeddings
+	\node[op] (cat1) at (7.75, 2.42) {$\Vert$};
+	\draw[flow] (tgt-out) -| (cat1.north);
+	\draw[flow] (spool-out) -| (cat1.south);
+	\slab{ctx}{8.25}{2.42}{1.1}{black!12}
+	\draw[flow] (cat1.east) -- (ctx-in);
+	\node[lab] (L) at (8.35, 1.7) {Context};
+	\node[dim] at (L.south) {96};
+	\node[op] (cat2) at (9.1, 2.42) {$\Vert$};
+	\draw[flow] (ctx-out) -- (cat2.west);
+	\slab{modes}{8.95}{3.8}{0.4}{predC!20}
+	\draw[flow] (9.1, 3.48) -- (cat2.north);
+	\node[lab, anchor=south west] at (9.25, 3.95) {6 mode embeddings, $6{\times}16$};
+	% ---------------- shared GRU decoder
+	\draw[frame] (9.5, 1.2) rectangle (14.6, 3.6);
+	\node[ftitle] at (9.5, 3.6) {Shared GRU decoder, 12 steps};
+	\slab{h0}{9.75}{2.42}{0.75}{predC!15}
+	\slab{gru}{11.0}{2.42}{0.75}{predC!28}
+	\slab{head}{12.25}{2.42}{0.35}{black!18}
+	\node[op] (sum) at (13.2, 2.42) {$\Sigma$};
+	\slab{fut}{13.75}{2.42}{0.9}{predC!45}
+	\draw[flow] (cat2.east) -- (h0-in);
+	\draw[flow] (h0-out) -- (gru-in);
+	\draw[flow] (gru-out) -- (head-in);
+	\draw[flow] (head-out) -- (sum.west);
+	\draw[flow] (sum.east) -- (fut-in);
+	\draw[flow] (12.85, 2.42) -- (12.85, 3.2) -| (11.15, 2.95);
+	\node[dim, anchor=south] at (12.0, 3.2) {feed back $\delta_{r-1}$};
+	\foreach \x/\n/\d in {9.85/Init $s_0$/6{\times}64, 11.1/GRU/6{\times}64, 12.35/Head/6{\times}2, 13.9/6 futures/6{\times}12{\times}2} {
+		\node[lab] (L) at (\x, 1.85) {\n};
+		\node[dim] at (L.south) {$\d$};
+	}
+	% ---------------- PGD loop: objective -> gradient -> feasibility scaling -> target's past
+	\node[pgd, minimum width=3.3cm] (goal) at (13.05, 0.45) {objective $J$: ADE, FDE,\\left / right / front / rear};
+	\node[pgd, minimum width=3.2cm] (ascend) at (9.15, 0.45) {$v \leftarrow v + \eta\,\nabla_{v} J$ (model frozen)\\$\delta = \theta v$, largest feasible $\theta$};
+	\draw[flow] (fut-out) -- (15.0, 2.42) |- node[pos=0.25, right, inner sep=1.5pt] {$\hat{Y}$} (goal.east);
+	\draw[atk, dash pattern=on 3pt off 1.5pt] (goal) -- node[above, inner sep=1.5pt] {$\nabla$} (ascend);
+	\draw[atk] (ascend.south) |- (-0.25, -0.25) |- (0.05, 3.7);
+	\node[attackC, anchor=east, inner sep=1.5pt] at (-0.25, 1.6) {$\delta$};
+\end{tikzpicture}
