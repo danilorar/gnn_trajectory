@@ -1,33 +1,27 @@
+# Python and editor files
 .venv/
 __pycache__/
+*.py[cod]
 .ipynb_checkpoints/
-*.pyc
 .vscode/
+
+# Local credentials and configuration
+.env
+.env.*
+.aws/
+.codex/
+.agents/
+
+# Checkpoints and generated experiment outputs
 checkpoints/
-# Generated experiment/final weights, manifests, histories and logs stay local.
 checkpoints_*/
-data/processed/*_map.pkl
+outputs/
 
-# Not data 
-data/maps/ 
-data/samples/
-data/sweeps/
-data/basemap/
-data/expansion/
+# nuScenes assets and generated datasets stay local; retain the data license.
+/data/*
+!/data/LICENSE
 
-# nuScenes raw / downloaded data
-data/v1.0-trainval/
-data/v1.0-trainval_meta.tgz
-data/nuScenes-map-expansion-v1.3.zip
-data/nuScenes-map-expansion-v1.3/
-data/v1.0-test_meta.tgz
-
-# Generated radius-sweep datasets and model checkpoints
-data/processed/radius_sweep/**/*.pkl
-data/processed/radius_sweep/**/*.pth
-
-# Multimodal multi-seed checkpoints
-data/processed/multimodal_seed_check/*.pth
-
-# Local camera-image exports and shareable bundles
-/data/camera_exports/
+# Local backups and sharing bundles
+/local_backups/
+/gnn_trajectory_code.zip*
+/pr19_robustness_bundle.zip*

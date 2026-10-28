@@ -635,6 +635,16 @@ def build_prediction_dataset(
 
 if __name__ == "__main__":
 
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build the fixed 35 m prediction datasets.")
+    parser.add_argument(
+        "--without-map", action="store_true",
+        help="Build non-map datasets for the target-only, attention and multimodal baselines",
+    )
+    args = parser.parse_args()
+    include_map = not args.without_map
+
     DATA_DIR = PROJECT_ROOT / "data"
     VERSION = "v1.0-trainval"
     
@@ -675,7 +685,7 @@ if __name__ == "__main__":
         radius=35.0,
         past_steps=4,
         future_steps=12,
-        include_map=True,
+        include_map=include_map,
     )
         
     val_dataset, val_skip_reasons = build_prediction_dataset(
@@ -684,7 +694,7 @@ if __name__ == "__main__":
         radius=35.0,
         past_steps=4,
         future_steps=12,
-        include_map=True,
+        include_map=include_map,
     )
     
     test_dataset, test_skip_reasons = build_prediction_dataset(
@@ -693,7 +703,7 @@ if __name__ == "__main__":
         radius=35.0,
         past_steps=4,
         future_steps=12,
-        include_map=True,
+        include_map=include_map,
 )
 
     print("\nTrain processed:", len(train_dataset))
@@ -720,7 +730,7 @@ if __name__ == "__main__":
                 assert neighbor_past.shape == (5, 2)
                 
             # lane check 
-            for lane in sample["map_lanes"]:
+            for lane in sample.get("map_lanes", []):
                 assert lane.ndim == 2
                 assert lane.shape[1] == 2
                 assert np.isfinite(lane).all(), "Lane contains NaN or Inf values"
@@ -736,9 +746,10 @@ if __name__ == "__main__":
     exist_ok=True
     )
     
-    train_path = PROCESSED_DIR / "nuscenes_train_prediction_samples_map.pkl"
-    val_path = PROCESSED_DIR / "nuscenes_val_prediction_samples_map.pkl"
-    test_path = PROCESSED_DIR / "nuscenes_test_prediction_samples_map.pkl"
+    suffix = "" if args.without_map else "_map"
+    train_path = PROCESSED_DIR / f"nuscenes_train_prediction_samples{suffix}.pkl"
+    val_path = PROCESSED_DIR / f"nuscenes_val_prediction_samples{suffix}.pkl"
+    test_path = PROCESSED_DIR / f"nuscenes_test_prediction_samples{suffix}.pkl"
     
     with open(train_path, "wb") as f:
         pickle.dump(train_dataset, f)

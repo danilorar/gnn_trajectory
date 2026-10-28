@@ -1,0 +1,9 @@
+# Python 3.12. Install a suitable CPU/CUDA PyTorch build first if needed.
+numpy>=1.22,<2
+torch>=2.2
+torch-geometric>=2.5
+nuscenes-devkit==1.2.0
+matplotlib>=3.6
+Pillow>=10
+pyquaternion>=0.9.9
+tqdm>=4.66

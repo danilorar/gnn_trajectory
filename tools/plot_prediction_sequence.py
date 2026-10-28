@@ -4,7 +4,7 @@ Uses the saved sequence metadata, processed test dataset, and trained GRU.
 No temporary caches, raw nuScenes metadata, or training are needed.
 
 Example:
-    python tools/plot_prediction_sequence.py --sequence docs/figures/qualitative/scene0556_right_turn/sequence.json --output-dir /tmp/scene0556
+    python tools/plot_prediction_sequence.py --sequence assets/right_turn_sequence.json --output-dir /tmp/scene0556
 """
 
 import argparse
@@ -35,7 +35,7 @@ from utils.training_utils import set_seed
 # Shared colours and agent styles
 # ========================================================
 
-SEQUENCE_FILE = PROJECT_ROOT / "docs/figures/qualitative/scene0556_right_turn/sequence.json"
+SEQUENCE_FILE = PROJECT_ROOT / "assets/right_turn_sequence.json"
 
 BLUE = "#2463a6"
 GREEN = "#288448"
