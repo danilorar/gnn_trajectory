@@ -1,16 +1,14 @@
 # Multimodal Trajectory Prediction with a GRU Decoder
 
-Predicting how a vehicle will move means accounting for several plausible futures. This project studies what graph-based interactions, lane geometry, and sequential decoding each contribute to that prediction on **nuScenes**.
-
-The final model combines a **GATv2 interaction backbone**, a **lane-centerline map encoder**, and a **GRU displacement decoder**. It uses 2 seconds of observed motion to predict **six possible trajectories over the next 6 seconds**.
-
-**[Read the report](report/Trajectory_prediction_Report.pdf)**
+A map-aware **GATv2–GRU model** that predicts **six possible vehicle trajectories**, using **2 seconds of motion history** to forecast **6 seconds ahead** on nuScenes.
 
 <p align="center">
-  <img src="assets/right_turn.gif" width="640" alt="A nuScenes right-turn example showing nearby agent types, observed motion, ground truth and six GRU trajectory predictions">
+  <img src="assets/right_turn.gif" width="960" alt="A nuScenes right-turn example showing nearby agent types, observed motion, ground truth and six GRU trajectory predictions">
 </p>
 
 *Right-turn prediction on nuScenes. Red highlights the mode closest to ground truth by ADE.*
+
+**[Read the report](report/Trajectory_prediction_Report.pdf)**
 
 ## What we found
 
