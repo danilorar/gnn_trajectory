@@ -28,3 +28,15 @@ data/processed/radius_sweep/**/*.pth
 
 # Multimodal multi-seed checkpoints
 data/processed/multimodal_seed_check/*.pth
+
+# LaTeX build files and editor/OS clutter
+doc/**/*.aux
+doc/**/*.bbl
+doc/**/*.blg
+doc/**/*.fdb_latexmk
+doc/**/*.fls
+doc/**/*.log
+doc/**/*.out
+doc/**/*.synctex.gz
+*.code-workspace
+.DS_Store

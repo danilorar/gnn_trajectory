@@ -17,6 +17,9 @@ constraint,loss}.py), adapted to the issue #18 metrics:
   recomputed differentiably (the set of lanes within 50 m stays fixed)
 - objectives: ade / fde (on minADE6 / minFDE6, squared as in the original
   loss) and left / right / front / rear deviation of the min-ADE candidate
+- for multimodal models, also whether the candidates stay diverse and accurate
+  under attack (spread, hits within 2 m, shift coherence); per-sample
+  perturbations are saved next to the results
 
 Map-aware models read the *_map datasets, which hold the same samples in the
 same order as the plain ones, so the same --num-samples draw is comparable.
@@ -76,6 +79,7 @@ PHYSICAL_BOUNDS = {
 }
 DEVIATION_BOUND = 1.0   # metres per observed point
 HALF_LANE_WIDTH = 1.85  # metres; the paper's real-world-impact threshold
+MISS_THRESHOLD = 2.0    # metres; nuScenes miss rate: a candidate hits if its largest pointwise error is within this
 THETAS = torch.arange(100, 1, -1, dtype=torch.float32) / 100  # 1.00 ... 0.02
 
 MODEL_CLASSES = {
@@ -102,11 +106,17 @@ def uses_map(specs):
 
 
 def checkpoint_path(spec, checkpoint_dirs):
-    """The one '<name>_seed<seed>_best.pth' under the given dirs (any depth); None for 'cv'."""
+    """The one '<name>_seed<seed>_best.pth' directly in the given dirs, else in their subdirs; None for 'cv'.
+
+    Top level first, so archived copies in subdirs don't shadow the current checkpoint.
+    """
     if spec == "cv":
         return None
     name, seed = spec.split(":")
-    matches = [p for d in checkpoint_dirs if d.is_dir() for p in d.rglob(f"{name}_seed{seed}_best.pth")]
+    filename = f"{name}_seed{seed}_best.pth"
+    matches = [d / filename for d in checkpoint_dirs if (d / filename).is_file()]
+    if not matches:
+        matches = [p for d in checkpoint_dirs if d.is_dir() for p in d.rglob(filename)]
     if len(matches) != 1:
         raise FileNotFoundError(f"{spec}: expected one checkpoint, found {[str(p) for p in matches]}")
     return matches[0]
@@ -222,6 +232,45 @@ def sample_metrics(pred, future, forward, left):
     }
 
 
+def mode_metrics(pred, future, reference=None, origin_shift=None):
+    """Do the K candidates [B, K, 12, 2] stay diverse and accurate? Empty for single predictions.
+
+    spread: mean pairwise distance between candidate endpoints (m); hits: candidates within
+    MISS_THRESHOLD of the ground truth at every step; miss: share of samples without a hit.
+    Against a reference prediction, over samples whose prediction moved: spread_ratio, and
+    coherence = |mean endpoint shift| / mean |endpoint shift| (1 = all candidates shift by the
+    same vector, near 0 = their shifts cancel out). Moving the current position [B, 2] moves
+    every candidate with the frame, so coherence_recentred removes that shift first.
+    """
+    num_modes = pred.shape[1]
+    if num_modes < 2:
+        return {}
+    i, j = torch.triu_indices(num_modes, num_modes, offset=1)
+
+    def spread(p):
+        return (p[:, i, -1] - p[:, j, -1]).norm(dim=-1).mean(dim=1)
+
+    hits = ((pred - future[:, None]).norm(dim=-1).amax(dim=-1) <= MISS_THRESHOLD).sum(dim=1)
+    out = {"spread": float(spread(pred).mean()), "hits": float(hits.float().mean()),
+           "miss": float((hits == 0).float().mean())}
+    if reference is not None:
+        shift = pred[:, :, -1] - reference[:, :, -1]
+
+        def coherence(s):
+            size = s.norm(dim=-1).mean(dim=1)
+            ok = size > 1e-3
+            return float((s.mean(dim=1).norm(dim=-1)[ok] / size[ok]).mean())
+
+        # nan when no prediction moved
+        moved = shift.norm(dim=-1).mean(dim=1) > 1e-3
+        out["moved_share"] = float(moved.float().mean())
+        out["spread_ratio"] = float((spread(pred) / spread(reference))[moved].mean())
+        out["coherence"] = coherence(shift)
+        if origin_shift is not None:
+            out["coherence_recentred"] = coherence(shift - origin_shift[:, None])
+    return out
+
+
 def attack_loss(pred, future, forward, left, objective):
     """Per-sample loss to minimise (negative attack goal)."""
     if objective == "ade":
@@ -281,16 +330,22 @@ def random_control(model, batch, clean_past, future, future_head, target_size, d
     while scale < 2.0 and draw(scale).norm(dim=-1).mean() < target_size:
         scale += 0.025
 
-    sizes, runs = [], []
+    sizes, runs, modes = [], [], []
     with torch.no_grad():
+        clean_pred = perturbed_forward(model, batch, torch.zeros_like(clean_past))
         for _ in range(draws):
             delta = draw(scale)
             sizes.append(float(delta.norm(dim=-1).mean()))
-            runs.append(sample_metrics(perturbed_forward(model, batch, delta), future, forward, left))
-    return {"mean_point_m": float(np.mean(sizes)), "draws": draws,
-            "metrics": {k: float(torch.stack([r[k] for r in runs]).mean()) for k in runs[0]},
-            "beyond_half_lane": {d: float(torch.stack([(r[d] > HALF_LANE_WIDTH).float() for r in runs]).mean())
-                                 for d in DIRECTIONS}}
+            pred = perturbed_forward(model, batch, delta)
+            runs.append(sample_metrics(pred, future, forward, left))
+            modes.append(mode_metrics(pred, future, clean_pred, delta[:, -1]))
+    out = {"mean_point_m": float(np.mean(sizes)), "draws": draws,
+           "metrics": {k: float(torch.stack([r[k] for r in runs]).mean()) for k in runs[0]},
+           "beyond_half_lane": {d: float(torch.stack([(r[d] > HALF_LANE_WIDTH).float() for r in runs]).mean())
+                                for d in DIRECTIONS}}
+    if modes[0]:
+        out["modes"] = {k: float(np.nanmean([m[k] for m in modes])) for k in modes[0]}
+    return out
 
 # ========================================================
 # FIGURE
@@ -425,8 +480,8 @@ def main():
         start = time.time()
 
         with torch.no_grad():
-            clean = sample_metrics(perturbed_forward(model, batch, torch.zeros_like(clean_past)),
-                                   future, forward, left)
+            clean_pred = perturbed_forward(model, batch, torch.zeros_like(clean_past))
+            clean = sample_metrics(clean_pred, future, forward, left)
 
         path = checkpoint_path(spec, args.checkpoint_dir)
         entry = {"checkpoint": str(path.relative_to(PROJECT_ROOT)) if path else None,
@@ -434,13 +489,19 @@ def main():
                  "clean": {k: float(v.mean()) for k, v in clean.items()}, "attacked": {},
                  "clean_beyond_half_lane": {d: float((clean[d] > HALF_LANE_WIDTH).float().mean()) for d in DIRECTIONS},
                  "attacked_beyond_half_lane": {}, "perturbation": {}, "all_metrics_under_attack": {}}
+        clean_modes = mode_metrics(clean_pred, future)
+        if clean_modes:
+            entry["modes"] = {"clean": clean_modes, "attacked": {}}
         deltas = {}
         for objective in OBJECTIVES:
             delta = pgd_attack(model, batch, clean_past, future, future_head, objective,
                                args.restarts, args.iters, generator)
             deltas[objective] = delta
             with torch.no_grad():
-                adv = sample_metrics(perturbed_forward(model, batch, delta), future, forward, left)
+                adv_pred = perturbed_forward(model, batch, delta)
+                adv = sample_metrics(adv_pred, future, forward, left)
+            if clean_modes:
+                entry["modes"]["attacked"][objective] = mode_metrics(adv_pred, future, clean_pred, delta[:, -1])
             entry["attacked"][objective] = float(adv[objective].mean())
             entry["all_metrics_under_attack"][objective] = {k: float(v.mean()) for k, v in adv.items()}
             if objective in DIRECTIONS:
@@ -462,6 +523,9 @@ def main():
         attack_size = np.mean([entry["perturbation"][o]["mean_point_m"] for o in OBJECTIVES])
         entry["random_control"] = random_control(model, batch, clean_past, future, future_head, attack_size)
         results["models"][spec] = entry
+        # Per-sample perturbations, e.g. for later decompositions without rerunning PGD
+        np.savez_compressed(args.output_dir / f"deltas_{args.split}_b{args.boundary_points}_{spec.replace(':', '_seed')}.npz",
+                            sample_indices=chosen, **{o: d.numpy() for o, d in deltas.items()})
 
         # Illustrative examples: median attacked sample for each direction (first model only)
         if spec == args.models[0]:
@@ -533,6 +597,29 @@ def write_report(results, md_path):
            "| Model | " + " | ".join(OBJECTIVES) + " |", "|---|" + "---:|" * len(OBJECTIVES)]
     for spec, e in results["models"].items():
         md.append(f"| {spec} | " + " | ".join(f"{e['perturbation'][o]['mean_point_m']:.2f}" for o in OBJECTIVES) + " |")
+
+    with_modes = {spec: e for spec, e in results["models"].items() if "modes" in e}
+    if with_modes:
+        md += ["", "Candidates: spread = mean pairwise distance between candidate endpoints; hits = candidates "
+               f"within {MISS_THRESHOLD} m of the ground truth at every step; miss = share of samples without a hit. "
+               "Spread ratio and coherence compare with the clean prediction, over samples whose prediction moved; "
+               "coherence = |mean endpoint shift| / mean |endpoint shift| (1 = all candidates shift together, "
+               "near 0 = their shifts cancel out); re-centred removes the shift of the current position, "
+               "which moves every candidate with the frame.", "",
+               "| Model | | Spread (m) | Spread ratio | Hits | Miss rate | Coherence | Coherence, re-centred |",
+               "|---|---|---:|---:|---:|---:|---:|---:|"]
+
+        def mode_row(label, m):
+            optional = [f"{m[k]:.2f}" if k in m else "–" for k in ("spread_ratio", "coherence", "coherence_recentred")]
+            return (f"| {label} | {m['spread']:.2f} | {optional[0]} | {m['hits']:.2f} | {m['miss']:.1%} | "
+                    f"{optional[1]} | {optional[2]} |")
+
+        for spec, e in with_modes.items():
+            md.append(mode_row(f"{spec} | clean", e["modes"]["clean"]))
+            if "modes" in e.get("random_control", {}):
+                md.append(mode_row(" | random, same size", e["random_control"]["modes"]))
+            for objective, m in e["modes"]["attacked"].items():
+                md.append(mode_row(f" | attacked: {objective}", m))
     md.append("")
 
     md_path.write_text("\n".join(md))
