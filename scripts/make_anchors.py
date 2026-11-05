@@ -1,6 +1,6 @@
 """K-means anchors on train-split target endpoints (target frame, 6 s ahead).
 
-Saves data/processed_v2/anchors.npy (K, 2) and outputs/anchors.png.
+Saves assets/anchors.npy (K, 2) and outputs/anchors.png.
 """
 
 import argparse
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("--k", type=int, default=6)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--data", default=str(PROJECT_ROOT / "data/processed_v2/nuscenes_train_prediction_samples_map.pkl"))
-    parser.add_argument("--out", default=str(PROJECT_ROOT / "data/processed_v2/anchors.npy"))
+    parser.add_argument("--out", default=str(PROJECT_ROOT / "assets/anchors.npy"))
     parser.add_argument("--plot", default=str(PROJECT_ROOT / "outputs/anchors.png"))
     args = parser.parse_args()
 
