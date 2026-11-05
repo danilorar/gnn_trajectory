@@ -46,15 +46,54 @@ def load_graphs(split, use_map):
     return [sample_to_graph(sample) for sample in samples]
 
 
+def agent_min_errors(traj, future, valid):
+    """Multi-agent minADE / minFDE per agent: ADE over the valid future steps, FDE at the last valid step,
+    each with its own best mode. traj (B, M, K, F, 2), future (B, M, F, 2), valid (B, M, F) -> (B, M), (B, M)."""
+    err = (traj - future[:, :, None]).norm(dim=-1)                                      # (B, M, K, F)
+    v = valid.float()[:, :, None]
+    ade = ((err * v).sum(-1) / v.sum(-1).clamp(min=1)).min(-1).values
+    last = (valid * torch.arange(1, valid.shape[-1] + 1, device=valid.device)).argmax(-1)  # last valid step
+    fde = err.gather(3, last[:, :, None, None].expand(-1, -1, err.shape[2], 1))[..., 0].min(-1).values
+    return ade, fde
+
+
+def moving_agents(batch, slots, threshold=1.0):
+    """(B, M) bool: the agent is > threshold m from its current position at some valid history or future step.
+    Parked or stopped agents are trivial to predict, so all-agent numbers are also reported on moving ones."""
+    from utils.models_v2 import token_poses
+    now = token_poses(batch)[0][:, slots, :2]                                            # (B, M, 2)
+    hist, hv = batch["agent_hist"][:, slots, :, :2], batch["agent_hist_valid"][:, slots]
+    fut, fv = batch["agent_future"][:, slots], batch["agent_future_valid"][:, slots]
+    d_hist = ((hist - now[:, :, None]).norm(dim=-1) * hv).amax(-1)
+    d_fut = ((fut - now[:, :, None]).norm(dim=-1) * fv).amax(-1)
+    return torch.maximum(d_hist, d_fut) > threshold
+
+
 def evaluate_v2(model, loader, device, miss_threshold=2.0):
-    """minADE6 / minFDE6 (same metric code as v1) and miss rate = share of samples with minFDE6 > 2 m."""
+    """Target minADE6 / minFDE6 (same metric code as v1) and miss rate = share of samples with minFDE6 > 2 m.
+    For a multi-agent model also sets evaluate_v2.last_all_agents = (minADE6, minFDE6, n agents) over all
+    predicted agents with >= 6 valid future steps (target included), and evaluate_v2.last_moving_agents,
+    the same over the moving ones only (moving_agents: > 1 m from the current position in history or future)."""
     model.eval()
     ade_sum = fde_sum = miss_sum = n = 0.0
+    all_ade = all_fde = all_n = 0.0
+    mov_ade = mov_fde = mov_n = 0.0
     wins = None
     with torch.no_grad():
         for batch in loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             traj, _ = model(batch)
+            if traj.ndim == 5:                       # multi-agent: (B, M, K, F, 2), target at index 0
+                future, valid, include = model.agent_targets(batch)
+                a_ade, a_fde = agent_min_errors(traj, future, valid)
+                all_ade += a_ade[include].sum().item()
+                all_fde += a_fde[include].sum().item()
+                all_n += include.sum().item()
+                moving = include & moving_agents(batch, model.slots)
+                mov_ade += a_ade[moving].sum().item()
+                mov_fde += a_fde[moving].sum().item()
+                mov_n += moving.sum().item()
+                traj = traj[:, 0]
             ade, fde = multimodal_metrics(traj, batch["target_future"])
             ade_sum, fde_sum, n = ade_sum + ade.sum().item(), fde_sum + fde.sum().item(), n + len(ade)
             miss_sum += (fde > miss_threshold).sum().item()
@@ -63,6 +102,8 @@ def evaluate_v2(model, loader, device, miss_threshold=2.0):
             counts = torch.bincount(winner, minlength=traj.shape[1]).cpu()
             wins = counts if wins is None else wins + counts
     evaluate_v2.last_mode_wins = (wins / n).tolist()
+    evaluate_v2.last_all_agents = (all_ade / all_n, all_fde / all_n, int(all_n)) if all_n else None
+    evaluate_v2.last_moving_agents = (mov_ade / mov_n, mov_fde / mov_n, int(mov_n)) if mov_n else None
     return ade_sum / n, fde_sum / n, miss_sum / n
 
 
@@ -80,8 +121,9 @@ def run_v2(args, seed, device, checkpoint):
                            persistent_workers=True,
                            generator=torch.Generator().manual_seed(seed) if shuffle else None)
 
-    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"), assign=args.assign,
-                        topology=args.topology, scale_inputs=args.scale_inputs).to(device)
+    model = V2Predictor(np.load(PROJECT_ROOT / args.anchors), assign=args.assign,
+                        topology=args.topology, scale_inputs=args.scale_inputs,
+                        predict_agents=args.predict_agents).to(device)
     val_loader, test_loader = loader("val", False), loader("test", False)
     val_metrics = []
     stopped_epoch = None
@@ -97,7 +139,8 @@ def run_v2(args, seed, device, checkpoint):
             torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(train_loader) - warmup,
                                                        eta_min=1e-5),
         ], milestones=[warmup])
-        print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
+        print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}, "
+              f"predict_agents={args.predict_agents}, anchors={args.anchors}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
         for epoch in range(1, args.epochs + 1):
@@ -123,6 +166,14 @@ def run_v2(args, seed, device, checkpoint):
             print(f"epoch {epoch:3d} | loss {loss_sum / steps:.3f} (reg {reg_sum / steps:.3f}, "
                   f"cls {cls_sum / steps:.3f}) | val minADE6 {val_ade:.3f} m, minFDE6 {val_fde:.3f} m, "
                   f"miss {val_miss:.1%} | lr {scheduler.get_last_lr()[0]:.1e} | {time.time() - start:.0f}s", flush=True)
+            if evaluate_v2.last_all_agents:
+                a_ade, a_fde, a_n = evaluate_v2.last_all_agents
+                print(f"          val all agents: minADE6 {a_ade:.3f} m, minFDE6 {a_fde:.3f} m ({a_n} agents)",
+                      flush=True)
+            if evaluate_v2.last_moving_agents:
+                a_ade, a_fde, a_n = evaluate_v2.last_moving_agents
+                print(f"          val moving agents (>1 m): minADE6 {a_ade:.3f} m, minFDE6 {a_fde:.3f} m ({a_n} agents)",
+                      flush=True)
             wins = evaluate_v2.last_mode_wins
             print("          val mode wins: " + " ".join(f"{w:.1%}" for w in wins)
                   + ("  <- DEAD MODE (<3%)" if min(wins) < 0.03 else ""), flush=True)
@@ -137,18 +188,31 @@ def run_v2(args, seed, device, checkpoint):
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
     names = ("minADE6", "minFDE6", "miss_rate_2m")
     validation = dict(zip(names, map(float, evaluate_v2(model, val_loader, device))))
+    if evaluate_v2.last_all_agents:
+        validation["all_agents_minADE6"], validation["all_agents_minFDE6"], validation["all_agents_n"] = \
+            evaluate_v2.last_all_agents
+    if evaluate_v2.last_moving_agents:
+        validation["moving_agents_minADE6"], validation["moving_agents_minFDE6"], validation["moving_agents_n"] = \
+            evaluate_v2.last_moving_agents
     # Test is evaluated once, on the best-val checkpoint, only after training (settings are chosen on val).
     testing = dict(zip(names, map(float, evaluate_v2(model, test_loader, device))))
+    if evaluate_v2.last_all_agents:
+        testing["all_agents_minADE6"], testing["all_agents_minFDE6"], testing["all_agents_n"] = \
+            evaluate_v2.last_all_agents
+    if evaluate_v2.last_moving_agents:
+        testing["moving_agents_minADE6"], testing["moving_agents_minFDE6"], testing["moving_agents_n"] = \
+            evaluate_v2.last_moving_agents
 
     if not args.evaluate_only:
         save_run_manifest(
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
+            predict_agents=args.predict_agents,
             model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             patience=args.patience, stopped_epoch=stopped_epoch, epochs_trained=len(val_metrics),
             lr=args.lr, device=str(device), validation_metrics=validation, test_metrics=testing,
             optimizer="AdamW (wd 0.01), 1-epoch linear warmup + cosine to 1e-5, grad clip 1.0, dropout 0.1",
-            anchors="assets/anchors.npy",
+            anchors=str(args.anchors),
         )
     print("Final results | model=v2 | seed=%d" % seed)
     for label, m in (("Validation", validation), ("Test", testing)):
@@ -179,6 +243,10 @@ def main():
     )
     parser.add_argument("--patience", type=int, default=10,
                         help="v2 only: early stopping patience on val minADE6 in epochs (0 = off)")
+    parser.add_argument("--anchors", default="assets/anchors.npy",
+                        help="v2 only: anchor file (K, 2), relative to the project root")
+    parser.add_argument("--predict-agents", type=int, default=1,
+                        help="v2 only: 1 = target only; 16 = target + 15 nearest neighbours (ego slot skipped)")
     parser.add_argument("--topology", action="store_true",
                         help="v2 only: add successor/predecessor lane flags to the attention bias (7 inputs)")
     parser.add_argument("--scale-inputs", action="store_true",

@@ -79,6 +79,8 @@ def main():
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output", type=Path, help="Optional new JSON summary")
     parser.add_argument("--plot", action="store_true", help="Save a bar chart beside --output")
+    parser.add_argument("--examples", type=Path,
+                        help="v2 only: save a grid of example predictions (2 per turn bin) to this PNG and exit")
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
@@ -114,6 +116,11 @@ def main():
     if args.dataset is None:
         args.dataset = DATASET_V2 if model_name == "v2" else DATASET
     top1 = None
+    if args.examples:
+        if model_name != "v2":
+            parser.error("--examples supports --model v2 only")
+        plot_examples(args, device, seed)
+        return
     if model_name == "v2":
         ades, fdes, top1, displacements, angles, invalid, n_samples = evaluate_v2(args, device)
     else:
@@ -131,16 +138,20 @@ def evaluate_v2(args, device):
     dataset = TrajectoryDatasetV2(args.dataset)
     geometry = [endpoint_geometry(sample["target_future"]) for sample in dataset.samples]
     manifest = read_manifest(args.checkpoint) if args.checkpoint.with_suffix(".json").exists() else {}
-    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"),
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    model = V2Predictor(state["decoder.anchors"].cpu().numpy(),   # anchors are a buffer in the checkpoint
                         topology=manifest.get("topology", False),
-                        scale_inputs=manifest.get("scale_inputs", False)).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True), strict=True)
+                        scale_inputs=manifest.get("scale_inputs", False),
+                        predict_agents=manifest.get("predict_agents", 1)).to(device)
+    model.load_state_dict(state, strict=True)
     model.eval()
     ades, fdes, top_ades, top_fdes = [], [], [], []
     with torch.no_grad():
         for batch in TorchLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4):
             batch = {k: v.to(device) for k, v in batch.items()}
             traj, logits = model(batch)
+            if traj.ndim == 5:                       # multi-agent model: keep the target (index 0)
+                traj, logits = traj[:, 0], logits[:, 0]
             ade, fde = multimodal_metrics(traj, batch["target_future"])
             ades.extend(ade.cpu().tolist())
             fdes.extend(fde.cpu().tolist())
@@ -151,6 +162,87 @@ def evaluate_v2(args, device):
     displacements, angles = zip(*geometry)
     top1 = (np.asarray(top_ades), np.asarray(top_fdes))
     return np.asarray(ades), np.asarray(fdes), top1, list(displacements), list(angles), [], len(dataset)
+
+
+def plot_examples(args, device, seed, per_bin=2):
+    """Lanes, agent histories, ground truth and the 6 predicted modes for a few samples per turn bin."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.dataset_v2 import TrajectoryDatasetV2
+    from utils.models_v2 import V2Predictor
+
+    dataset = TrajectoryDatasetV2(args.dataset)
+    manifest = read_manifest(args.checkpoint) if args.checkpoint.with_suffix(".json").exists() else {}
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    model = V2Predictor(state["decoder.anchors"].cpu().numpy(),   # anchors are a buffer in the checkpoint
+                        topology=manifest.get("topology", False),
+                        scale_inputs=manifest.get("scale_inputs", False),
+                        predict_agents=manifest.get("predict_agents", 1)).to(device)
+    model.load_state_dict(state, strict=True)
+    model.eval()
+
+    geometry = np.array([endpoint_geometry(s["target_future"]) for s in dataset.samples])
+    moving, angles = geometry[:, 0] >= 5.0, geometry[:, 1]
+    edges = ((0, 15), (15, 30), (30, 60), (60, 361))
+    rng = np.random.default_rng(seed)
+    picks = [(label, i) for label, (lo, hi) in zip(LABELS, edges)
+             for i in rng.choice(np.flatnonzero(moving & (angles >= lo) & (angles < hi)), per_bin, replace=False)]
+
+    fig, axes = plt.subplots(per_bin, len(LABELS), figsize=(5 * len(LABELS), 5 * per_bin))
+    for ax, (label, idx) in zip(axes.T.flat, picks):
+        item = dataset[int(idx)]
+        batch = {k: v[None].to(device) for k, v in item.items()}
+        with torch.no_grad():
+            traj, logits = model(batch)
+        if traj.ndim == 5:
+            traj, logits = traj[:, 0], logits[:, 0]
+        traj, prob = traj[0].cpu().numpy(), logits[0].softmax(-1).cpu().numpy()
+        gt = item["target_future"].numpy()
+
+        for pts, valid in zip(item["lane_points"].numpy()[item["lane_mask"].numpy()],
+                              item["lane_point_valid"].numpy()[item["lane_mask"].numpy()]):
+            ax.plot(pts[valid, 0], pts[valid, 1], color="0.8", lw=1, zorder=1)
+        hist, hvalid = item["agent_hist"].numpy(), item["agent_hist_valid"].numpy()
+        for a in np.flatnonzero(item["agent_mask"].numpy())[1:]:
+            h = hist[a][hvalid[a]]
+            if len(h):
+                ax.plot(h[:, 0], h[:, 1], color="tab:purple" if a == 1 else "0.45", lw=1, zorder=2)
+                ax.plot(h[-1, 0], h[-1, 1], "s", ms=3, color="tab:purple" if a == 1 else "0.45", zorder=2)
+        h = hist[0][hvalid[0]]
+        ax.plot(h[:, 0], h[:, 1], color="tab:blue", lw=2, zorder=3)
+        ax.plot(0, 0, "o", color="tab:blue", ms=6, zorder=5)
+
+        best_score = prob.argmax()
+        best_ade = np.linalg.norm(traj - gt, axis=-1).mean(-1).argmin()
+        for k in np.argsort(prob):
+            ax.plot(traj[k, :, 0], traj[k, :, 1], color="tab:orange", lw=1 + 3 * prob[k],
+                    alpha=0.35 + 0.65 * prob[k] / prob.max(), zorder=4,
+                    ls="-" if k == best_score else "--")
+            ax.annotate(f"{prob[k]:.2f}", traj[k, -1], fontsize=7, color="tab:orange")
+        ax.plot(gt[:, 0], gt[:, 1], color="tab:green", lw=2.5, marker=".", ms=4, zorder=6)
+
+        ade = np.linalg.norm(traj[best_ade] - gt, axis=-1).mean()
+        top1 = np.linalg.norm(traj[best_score] - gt, axis=-1).mean()
+        centre = np.concatenate([gt, traj.reshape(-1, 2), [[0, 0]]])
+        mid, span = (centre.max(0) + centre.min(0)) / 2, max(np.ptp(centre, 0).max() / 2 + 8, 20)
+        ax.set_xlim(mid[0] - span, mid[0] + span)
+        ax.set_ylim(mid[1] - span, mid[1] + span)
+        ax.set_aspect("equal")
+        ax.grid(alpha=0.2)
+        ax.set_title(f"{label} | #{idx}\nminADE6 {ade:.2f} m, top-1 ADE {top1:.2f} m", fontsize=10)
+
+    handles = [plt.Line2D([], [], color=c, lw=w, ls=ls) for c, w, ls in
+               (("tab:green", 2.5, "-"), ("tab:orange", 3, "-"), ("tab:orange", 1.5, "--"),
+                ("tab:blue", 2, "-"), ("0.45", 1, "-"), ("tab:purple", 1, "-"), ("0.8", 1, "-"))]
+    fig.legend(handles, ["ground truth (6 s)", "top-score mode", "other modes (width/number = prob.)",
+                         "target history (2 s)", "other agents", "ego", "lane segments"],
+               loc="lower center", ncol=7, fontsize=9)
+    fig.suptitle(f"v2 predictions on {args.dataset.name} | {args.checkpoint.name} | target frame, heading +x")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.97))
+    args.examples.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(args.examples, dpi=120)
+    print(f"Saved {args.examples}")
 
 
 def evaluate_v1(args, model_name, device, parser):

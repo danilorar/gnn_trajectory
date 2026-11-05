@@ -1,4 +1,5 @@
-"""v2 scene transformer: token encoders (the encoder and decoder come next)."""
+"""v2 scene transformer: token encoders, scene encoder with a relative-pose attention bias,
+anchor decoder (target only, or multi-agent) and the winner-takes-all loss."""
 
 import torch
 import torch.nn as nn
@@ -172,7 +173,10 @@ class SceneEncoder(nn.Module):
 # ============================================================
 
 class DecoderLayer(nn.Module):
-    """Pre-LN: self-attention between the K mode queries, cross-attention to the scene, FFN."""
+    """Pre-LN: self-attention between the K mode queries of the same agent, cross-attention to the scene, FFN.
+    Queries are (B, M, K, d) for M predicted agents. Cross-attention runs on the flattened (B, M*K, d)
+    sequence: each query attends to the scene independently, so this equals running every agent on its own
+    without copying the scene M times."""
 
     def __init__(self, d_model=128, heads=8, dropout=0.1):
         super().__init__()
@@ -186,16 +190,19 @@ class DecoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, q, scene, pad):
-        h = self.norm1(q)
-        q = q + self.dropout(self.self_attn(h, h, h, need_weights=False)[0])
-        h = self.norm2(q)
-        q = q + self.dropout(self.cross_attn(h, scene, scene, key_padding_mask=pad, need_weights=False)[0])
+        B, M, K, d = q.shape
+        h = self.norm1(q).reshape(B * M, K, d)
+        q = q + self.dropout(self.self_attn(h, h, h, need_weights=False)[0]).view(B, M, K, d)
+        h = self.norm2(q).reshape(B, M * K, d)
+        q = q + self.dropout(self.cross_attn(h, scene, scene, key_padding_mask=pad,
+                                             need_weights=False)[0]).view(B, M, K, d)
         return q + self.dropout(self.ffn(self.norm3(q)))
 
 
 class AnchorDecoder(nn.Module):
-    """K anchor queries q_k = MLP(anchor_k) + emb_k + target_token (eq. 5.1).
-    Each query outputs a 12-step trajectory and a score; softmax over K gives the mode probabilities (eq. 5.2)."""
+    """Anchor queries q_ak = MLP(anchor_k) + emb_k + agent_token_a (eq. 5.1), for M agents and K modes.
+    Each query outputs a 12-step trajectory (in the agent's own frame) and a score;
+    softmax over K gives each agent's mode probabilities (eq. 5.2)."""
 
     def __init__(self, anchors, d_model=128, heads=8, layers=2, future_steps=12, dropout=0.1, pos_scale=50.0):
         super().__init__()
@@ -210,16 +217,16 @@ class AnchorDecoder(nn.Module):
         self.traj_head = mlp(d_model, future_steps * 2, hidden=d_model)
         self.score_head = mlp(d_model, 1, hidden=d_model)
 
-    def forward(self, scene, pad):
-        """scene (B, N, d) with the target token at index 0 -> traj (B, K, F, 2), logits (B, K)."""
-        B = scene.shape[0]
+    def forward(self, scene, pad, agents):
+        """scene (B, N, d), agents (B, M, d) tokens of the predicted agents -> traj (B, M, K, F, 2), logits (B, M, K)."""
+        B, M = agents.shape[:2]
         K = len(self.anchors)
-        q = (self.anchor_mlp(self.anchors / self.pos_scale) + self.mode_embedding.weight)[None]  # (1, K, d)
-        q = q + scene[:, :1]                                                                  # + target token
+        q = self.anchor_mlp(self.anchors / self.pos_scale) + self.mode_embedding.weight  # (K, d)
+        q = q[None, None] + agents[:, :, None]                                          # (B, M, K, d)
         for layer in self.layers:
             q = layer(q, scene, pad)
         q = self.norm(q)
-        traj = self.traj_head(q).view(B, K, self.future_steps, 2) * self.pos_scale  # predicted in 50 m units
+        traj = self.traj_head(q).view(B, M, K, self.future_steps, 2) * self.pos_scale  # predicted in 50 m units
         logits = self.score_head(q).squeeze(-1)
         return traj, logits
 
@@ -248,14 +255,53 @@ def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assig
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
 
 
+def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1.0):
+    """Predicted winner-takes-all per agent (as v2_loss with assign="predicted"), averaged over agents.
+
+    traj (B, M, K, F, 2), logits (B, M, K), future (B, M, F, 2), future_valid (B, M, F),
+    include (B, M) bool: agents that enter the loss."""
+    B, M, K = logits.shape
+    valid = future_valid.float()
+    n_valid = valid.sum(-1).clamp(min=1)                                                # (B, M)
+    with torch.no_grad():
+        err = (traj - future[:, :, None]).norm(dim=-1)                                  # (B, M, K, F)
+        k_star = ((err * valid[:, :, None]).sum(-1) / n_valid[..., None]).argmin(-1)    # (B, M)
+    best = traj.gather(2, k_star[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:]))[:, :, 0]  # (B, M, F, 2)
+    reg = (F.smooth_l1_loss(best, future, reduction="none").sum(-1) * valid).sum(-1) / n_valid       # (B, M)
+    cls = F.cross_entropy(logits.reshape(-1, K), k_star.reshape(-1), reduction="none").view(B, M)
+    w = include.float()
+    n = w.sum().clamp(min=1)
+    reg, cls = (reg * w).sum() / n, (cls * w).sum() / n
+    return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
+
+
+def to_target_frame(traj, pose):
+    """traj (B, M, K, F, 2) in each agent's own frame, pose (B, M, 3) = agent (x, y, theta) in the target frame."""
+    c, s = torch.cos(pose[..., 2])[..., None, None], torch.sin(pose[..., 2])[..., None, None]
+    x, y = traj[..., 0], traj[..., 1]
+    return torch.stack([c * x - s * y + pose[..., 0, None, None], s * x + c * y + pose[..., 1, None, None]], -1)
+
+
 class V2Predictor(nn.Module):
-    """Agent + lane encoders -> scene transformer -> anchor decoder."""
+    """Agent + lane encoders -> scene transformer -> anchor decoder.
+
+    predict_agents=1: target only, forward returns traj (B, K, F, 2), logits (B, K) (the original model).
+    predict_agents=M>1: target (slot 0) + the M-1 nearest neighbours (slots 2..M; slot 1 = ego is skipped,
+    the planner controls it). Each agent's path is predicted in its own frame (origin = its current pose,
+    x = its heading) and moved to the target frame; forward returns traj (B, M, K, F, 2), logits (B, M, K),
+    with the target at index 0."""
+
+    MIN_FUTURE_STEPS = 6  # agents with fewer valid future steps are left out of the loss and the metrics
 
     def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
-                 assign="predicted", topology=False, scale_inputs=False):
+                 assign="predicted", topology=False, scale_inputs=False, predict_agents=1):
         super().__init__()
+        if predict_agents > 1 and assign != "predicted":
+            raise ValueError("multi-agent prediction supports assign='predicted' only")
         self.assign = assign
         self.topology = topology
+        self.predict_agents = predict_agents
+        self.slots = [0] + list(range(2, predict_agents + 1)) if predict_agents > 1 else [0]
         pos_scale = 50.0 if scale_inputs else 1.0
         self.agent_encoder = AgentEncoder(d_model, pos_scale=pos_scale)
         self.lane_encoder = LaneEncoder(d_model, pos_scale=pos_scale)
@@ -274,9 +320,19 @@ class V2Predictor(nn.Module):
             adj = torch.zeros(len(tokens), N, N, dtype=torch.bool, device=tokens.device)
             adj[:, A:, A:] = batch["lane_adj"]
         scene = self.scene_encoder(tokens, pad, torch.cat([agent_pose, lane_pose], dim=1), adj)
-        traj, logits = self.decoder(scene, pad)
-        return traj, logits
+        traj, logits = self.decoder(scene, pad, scene[:, self.slots])
+        if self.predict_agents == 1:
+            return traj[:, 0], logits[:, 0]          # target frame = the target's own frame
+        return to_target_frame(traj, agent_pose[:, self.slots]), logits
+
+    def agent_targets(self, batch):
+        """Futures (B, M, F, 2), validity (B, M, F) and the loss/metric mask (B, M) of the predicted agents."""
+        future, valid = batch["agent_future"][:, self.slots], batch["agent_future_valid"][:, self.slots]
+        include = batch["agent_mask"][:, self.slots] & (valid.sum(-1) >= self.MIN_FUTURE_STEPS)
+        return future, valid, include
 
     def loss(self, batch, traj, logits):
-        return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"], self.decoder.anchors,
-                       assign=self.assign)
+        if self.predict_agents == 1:
+            return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"],
+                           self.decoder.anchors, assign=self.assign)
+        return multi_agent_loss(traj, logits, *self.agent_targets(batch))

@@ -1,6 +1,11 @@
-"""K-means anchors on train-split target endpoints (target frame, 6 s ahead).
+"""Endpoint anchors from train-split target endpoints (target frame, 6 s ahead).
 
-Saves assets/anchors.npy (K, 2) and outputs/anchors.png.
+--method kmeans (default): plain k-means, saves assets/anchors.npy.
+--method angle: one anchor per turn direction so rare sharp turns get their own mode.
+    Endpoints are grouped by angle (sharp right < -60, right -60..-15, straight |a| < 15,
+    left 15..60, sharp left > 60 deg; |a| > 135 deg, i.e. reversing, is left out of the sharp groups).
+    Straight gets K - 4 k-means anchors (speed spread), each turn group its median endpoint.
+    Saves assets/anchors_angle.npy.
 """
 
 import argparse
@@ -16,19 +21,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Make k-means endpoint anchors.")
     parser.add_argument("--k", type=int, default=6)
+    parser.add_argument("--method", choices=("kmeans", "angle"), default="kmeans")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--data", default=str(PROJECT_ROOT / "data/processed_v2/nuscenes_train_prediction_samples_map.pkl"))
-    parser.add_argument("--out", default=str(PROJECT_ROOT / "assets/anchors.npy"))
-    parser.add_argument("--plot", default=str(PROJECT_ROOT / "outputs/anchors.png"))
+    parser.add_argument("--out", help="Default: assets/anchors.npy or assets/anchors_angle.npy")
+    parser.add_argument("--plot", help="Default: outputs/anchors.png or outputs/anchors_angle.png")
     args = parser.parse_args()
+    suffix = "" if args.method == "kmeans" else "_angle"
+    args.out = args.out or str(PROJECT_ROOT / f"assets/anchors{suffix}.npy")
+    args.plot = args.plot or str(PROJECT_ROOT / f"outputs/anchors{suffix}.png")
 
     with open(args.data, "rb") as f:
         samples = pickle.load(f)
     endpoints = np.stack([s["target_future"][-1] for s in samples])  # (N, 2)
 
-    kmeans = KMeans(n_clusters=args.k, n_init=10, random_state=args.seed).fit(endpoints)
-    anchors = kmeans.cluster_centers_.astype(np.float32)
-    anchors = anchors[np.argsort(anchors[:, 0])]  # sort by forward distance for readability
+    if args.method == "kmeans":
+        kmeans = KMeans(n_clusters=args.k, n_init=10, random_state=args.seed).fit(endpoints)
+        anchors = kmeans.cluster_centers_.astype(np.float32)
+        anchors = anchors[np.argsort(anchors[:, 0])]  # sort by forward distance for readability
+    else:
+        if args.k < 5:
+            parser.error("--method angle needs --k >= 5")
+        ang = np.degrees(np.arctan2(endpoints[:, 1], endpoints[:, 0]))
+        straight = np.abs(ang) < 15
+        groups = [(ang <= -60) & (ang > -135), (ang <= -15) & (ang > -60),
+                  (ang >= 15) & (ang < 60), (ang >= 60) & (ang < 135)]
+        turn = [np.median(endpoints[g], axis=0) for g in groups]
+        km = KMeans(n_clusters=args.k - 4, n_init=10, random_state=args.seed).fit(endpoints[straight])
+        fwd = km.cluster_centers_[np.argsort(km.cluster_centers_[:, 0])]
+        anchors = np.concatenate([fwd, turn]).astype(np.float32)
     np.save(args.out, anchors)
 
     nearest = np.linalg.norm(endpoints[:, None] - anchors[None], axis=-1).argmin(1)
