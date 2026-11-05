@@ -36,9 +36,12 @@ def endpoint_geometry(future):
     return float(np.hypot(x, y)), float(abs(np.degrees(np.arctan2(y, x))))
 
 
-def summarize(ades, fdes):
+def summarize(ades, fdes, top1=None):
     result = {"n": int(len(ades))}
-    for name, values in (("minADE6", ades), ("minFDE6", fdes)):
+    pairs = [("minADE6", ades), ("minFDE6", fdes)]
+    if top1 is not None:
+        pairs += [("top1_ADE", top1[0]), ("top1_FDE", top1[1])]
+    for name, values in pairs:
         if len(values):
             result[name] = {
                 "mean": float(np.mean(values)),
@@ -53,7 +56,9 @@ def summarize(ades, fdes):
 def print_summary(label, summary):
     print(f"{label}: n={summary['n']}")
     if summary["n"]:
-        for name in ("minADE6", "minFDE6"):
+        for name in ("minADE6", "minFDE6", "top1_ADE", "top1_FDE"):
+            if name not in summary:
+                continue
             stats = summary[name]
             print(
                 f"  {name}: mean={stats['mean']:.6f}, median={stats['median']:.6f}, "
@@ -108,15 +113,17 @@ def main():
 
     if args.dataset is None:
         args.dataset = DATASET_V2 if model_name == "v2" else DATASET
+    top1 = None
     if model_name == "v2":
-        ades, fdes, displacements, angles, invalid, n_samples = evaluate_v2(args, device)
+        ades, fdes, top1, displacements, angles, invalid, n_samples = evaluate_v2(args, device)
     else:
         ades, fdes, displacements, angles, invalid, n_samples = evaluate_v1(args, model_name, device, parser)
-    bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples)
+    bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples, top1)
 
 
 def evaluate_v2(args, device):
-    """Per-sample minADE6 / minFDE6 of a v2 checkpoint, plus endpoint geometry."""
+    """Per-sample minADE6 / minFDE6 and top-1 (highest-score mode) ADE / FDE of a v2 checkpoint,
+    plus endpoint geometry."""
     from torch.utils.data import DataLoader as TorchLoader
     from utils.dataset_v2 import TrajectoryDatasetV2
     from utils.models_v2 import V2Predictor
@@ -129,15 +136,21 @@ def evaluate_v2(args, device):
                         scale_inputs=manifest.get("scale_inputs", False)).to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True), strict=True)
     model.eval()
-    ades, fdes = [], []
+    ades, fdes, top_ades, top_fdes = [], [], [], []
     with torch.no_grad():
         for batch in TorchLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4):
             batch = {k: v.to(device) for k, v in batch.items()}
-            ade, fde = multimodal_metrics(model(batch)[0], batch["target_future"])
+            traj, logits = model(batch)
+            ade, fde = multimodal_metrics(traj, batch["target_future"])
             ades.extend(ade.cpu().tolist())
             fdes.extend(fde.cpu().tolist())
+            best = traj[torch.arange(len(traj)), logits.argmax(-1)]           # (B, 12, 2)
+            err = torch.linalg.norm(best - batch["target_future"], dim=-1)    # (B, 12)
+            top_ades.extend(err.mean(-1).cpu().tolist())
+            top_fdes.extend(err[:, -1].cpu().tolist())
     displacements, angles = zip(*geometry)
-    return np.asarray(ades), np.asarray(fdes), list(displacements), list(angles), [], len(dataset)
+    top1 = (np.asarray(top_ades), np.asarray(top_fdes))
+    return np.asarray(ades), np.asarray(fdes), top1, list(displacements), list(angles), [], len(dataset)
 
 
 def evaluate_v1(args, model_name, device, parser):
@@ -186,7 +199,10 @@ def evaluate_v1(args, model_name, device, parser):
     return np.asarray(ades), np.asarray(fdes), displacements, angles, invalid, len(samples)
 
 
-def bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples):
+def bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples, top1=None):
+    def sub(mask):
+        return None if top1 is None else (top1[0][mask], top1[1][mask])
+
     if not (np.isfinite(ades).all() and np.isfinite(fdes).all()):
         raise ValueError("Non-finite prediction errors")
 
@@ -200,7 +216,7 @@ def bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, in
     )
     bins = {}
     for label, mask in zip(LABELS, masks):
-        bins[label] = summarize(ades[mask], fdes[mask])
+        bins[label] = summarize(ades[mask], fdes[mask], sub(mask))
     result = {
         "model": model_name,
         "seed": seed,
@@ -213,8 +229,8 @@ def bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, in
         "input_samples": n_samples,
         "invalid_sample_indices": invalid,
         "excluded_displacement_below_5m": int((~moving).sum()),
-        "full_test": summarize(ades, fdes),
-        "non_stationary": summarize(ades[moving], fdes[moving]),
+        "full_test": summarize(ades, fdes, top1),
+        "non_stationary": summarize(ades[moving], fdes[moving], sub(moving)),
         "turn_bins": bins,
     }
     print(f"Model={model_name} | seed={seed} | skipped invalid samples={len(invalid)}")
