@@ -30,6 +30,7 @@ from utils.training_utils import (
     read_manifest,
     save_run_manifest,
     set_seed,
+    multimodal_metrics,
     train_and_validate,
 )
 
@@ -45,11 +46,92 @@ def load_graphs(split, use_map):
     return [sample_to_graph(sample) for sample in samples]
 
 
+def evaluate_v2(model, loader, device):
+    """minADE6 / minFDE6 with the same metric code as v1."""
+    model.eval()
+    ade_sum = fde_sum = n = 0.0
+    with torch.no_grad():
+        for batch in loader:
+            batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+            traj, _ = model(batch)
+            ade, fde = multimodal_metrics(traj, batch["target_future"])
+            ade_sum, fde_sum, n = ade_sum + ade.sum().item(), fde_sum + fde.sum().item(), n + len(ade)
+    return ade_sum / n, fde_sum / n
+
+
+def run_v2(args, seed, device, checkpoint):
+    """Train / evaluate the v2 scene transformer (dict batches from data/processed_v2)."""
+    import time
+    from torch.utils.data import DataLoader as TorchLoader
+    from utils.dataset_v2 import TrajectoryDatasetV2
+    from utils.models_v2 import V2Predictor
+
+    def loader(split, shuffle):
+        ds = TrajectoryDatasetV2(PROJECT_ROOT / f"data/processed_v2/nuscenes_{split}_prediction_samples_map.pkl")
+        print(f"{split}: {len(ds)} samples", flush=True)
+        return TorchLoader(ds, batch_size=args.batch_size, shuffle=shuffle, num_workers=4, pin_memory=True,
+                           persistent_workers=True,
+                           generator=torch.Generator().manual_seed(seed) if shuffle else None)
+
+    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy")).to(device)
+    val_loader, test_loader = loader("val", False), loader("test", False)
+    val_metrics = []
+
+    if not args.evaluate_only:
+        train_loader = loader("train", True)
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=args.lr, total_steps=args.epochs * len(train_loader), pct_start=0.05)
+        print(f"Training v2 | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
+              f"seed={seed} | device={device}", flush=True)
+
+        for epoch in range(1, args.epochs + 1):
+            model.train()
+            start, loss_sum, reg_sum, cls_sum = time.time(), 0.0, 0.0, 0.0
+            for batch in train_loader:
+                batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+                traj, logits = model(batch)
+                loss, parts = model.loss(batch, traj, logits)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+                loss_sum, reg_sum, cls_sum = loss_sum + loss.item(), reg_sum + parts["reg"], cls_sum + parts["cls"]
+
+            steps = len(train_loader)
+            val_ade, val_fde = evaluate_v2(model, val_loader, device)
+            val_metrics.append(val_ade)
+            if val_ade == min(val_metrics):
+                torch.save(model.state_dict(), checkpoint)
+            print(f"epoch {epoch:3d} | loss {loss_sum / steps:.3f} (reg {reg_sum / steps:.3f}, "
+                  f"cls {cls_sum / steps:.3f}) | val minADE6 {val_ade:.3f} m, minFDE6 {val_fde:.3f} m | "
+                  f"{time.time() - start:.0f}s", flush=True)
+
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
+    validation = dict(zip(("minADE6", "minFDE6"), map(float, evaluate_v2(model, val_loader, device))))
+    testing = dict(zip(("minADE6", "minFDE6"), map(float, evaluate_v2(model, test_loader, device))))
+
+    if not args.evaluate_only:
+        save_run_manifest(
+            checkpoint, model="v2", model_class=type(model).__name__, seed=seed, num_modes=6,
+            num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
+            lr=args.lr, device=str(device), validation_metrics=validation, test_metrics=testing,
+            optimizer="AdamW (wd 0.01), OneCycle, grad clip 1.0", anchors="assets/anchors.npy",
+        )
+    print("Final results | model=v2 | seed=%d" % seed)
+    for label, m in (("Validation", validation), ("Test", testing)):
+        print(f"{label}: minADE6: {m['minADE6']:.6f} m | minFDE6: {m['minFDE6']:.6f} m")
+    print(f"Checkpoint: {checkpoint}")
+    return validation, testing
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model", required=True,
-        choices=("target_mlp", "attention", "multimodal", "multimodal_map", "multimodal_map_gru"),
+        choices=("target_mlp", "attention", "multimodal", "multimodal_map", "multimodal_map_gru", "v2"),
     )
     parser.add_argument("--seed", type=int, help="Default: 42, or the saved seed when evaluating")
     parser.add_argument("--epochs", type=int, default=30)
@@ -87,6 +169,10 @@ def main():
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
+
+    if args.model == "v2":
+        run_v2(args, seed, device, checkpoint)
+        return
 
     use_map = args.model in ("multimodal_map", "multimodal_map_gru")
     if not args.evaluate_only:
