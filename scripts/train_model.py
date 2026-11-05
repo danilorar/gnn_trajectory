@@ -84,6 +84,7 @@ def run_v2(args, seed, device, checkpoint):
                         topology=args.topology, scale_inputs=args.scale_inputs).to(device)
     val_loader, test_loader = loader("val", False), loader("test", False)
     val_metrics = []
+    stopped_epoch = None
 
     if not args.evaluate_only:
         train_loader = loader("train", True)
@@ -118,12 +119,20 @@ def run_v2(args, seed, device, checkpoint):
             val_metrics.append(val_ade)
             if val_ade == min(val_metrics):
                 torch.save(model.state_dict(), checkpoint)
+            best_epoch = int(np.argmin(val_metrics)) + 1
             print(f"epoch {epoch:3d} | loss {loss_sum / steps:.3f} (reg {reg_sum / steps:.3f}, "
                   f"cls {cls_sum / steps:.3f}) | val minADE6 {val_ade:.3f} m, minFDE6 {val_fde:.3f} m, "
                   f"miss {val_miss:.1%} | lr {scheduler.get_last_lr()[0]:.1e} | {time.time() - start:.0f}s", flush=True)
             wins = evaluate_v2.last_mode_wins
             print("          val mode wins: " + " ".join(f"{w:.1%}" for w in wins)
                   + ("  <- DEAD MODE (<3%)" if min(wins) < 0.03 else ""), flush=True)
+
+            # Early stopping on val minADE6; the cosine schedule stays defined over all args.epochs
+            if args.patience and epoch - best_epoch >= args.patience and epoch < args.epochs:
+                stopped_epoch = epoch
+                print(f"Early stopping at epoch {epoch}: no val minADE6 improvement for {args.patience} epochs "
+                      f"(best epoch {best_epoch}, {min(val_metrics):.3f} m)", flush=True)
+                break
 
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
     names = ("minADE6", "minFDE6", "miss_rate_2m")
@@ -136,6 +145,7 @@ def run_v2(args, seed, device, checkpoint):
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
             model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
+            patience=args.patience, stopped_epoch=stopped_epoch, epochs_trained=len(val_metrics),
             lr=args.lr, device=str(device), validation_metrics=validation, test_metrics=testing,
             optimizer="AdamW (wd 0.01), 1-epoch linear warmup + cosine to 1e-5, grad clip 1.0, dropout 0.1",
             anchors="assets/anchors.npy",
@@ -167,6 +177,8 @@ def main():
         "--assign", choices=("predicted", "anchor"), default="predicted",
         help="v2 only: mode used for the loss (predicted = lowest-ADE mode, anchor = closest anchor)",
     )
+    parser.add_argument("--patience", type=int, default=10,
+                        help="v2 only: early stopping patience on val minADE6 in epochs (0 = off)")
     parser.add_argument("--topology", action="store_true",
                         help="v2 only: add successor/predecessor lane flags to the attention bias (7 inputs)")
     parser.add_argument("--scale-inputs", action="store_true",
