@@ -123,7 +123,10 @@ def evaluate_v2(args, device):
 
     dataset = TrajectoryDatasetV2(args.dataset)
     geometry = [endpoint_geometry(sample["target_future"]) for sample in dataset.samples]
-    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy")).to(device)
+    manifest = read_manifest(args.checkpoint) if args.checkpoint.with_suffix(".json").exists() else {}
+    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"),
+                        topology=manifest.get("topology", False),
+                        scale_inputs=manifest.get("scale_inputs", False)).to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True), strict=True)
     model.eval()
     ades, fdes = [], []

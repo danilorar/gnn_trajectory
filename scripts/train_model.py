@@ -80,7 +80,8 @@ def run_v2(args, seed, device, checkpoint):
                            persistent_workers=True,
                            generator=torch.Generator().manual_seed(seed) if shuffle else None)
 
-    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"), assign=args.assign).to(device)
+    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"), assign=args.assign,
+                        topology=args.topology, scale_inputs=args.scale_inputs).to(device)
     val_loader, test_loader = loader("val", False), loader("test", False)
     val_metrics = []
 
@@ -95,7 +96,7 @@ def run_v2(args, seed, device, checkpoint):
             torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(train_loader) - warmup,
                                                        eta_min=1e-5),
         ], milestones=[warmup])
-        print(f"Training v2 (assign={args.assign}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
+        print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
         for epoch in range(1, args.epochs + 1):
@@ -132,7 +133,8 @@ def run_v2(args, seed, device, checkpoint):
 
     if not args.evaluate_only:
         save_run_manifest(
-            checkpoint, model="v2", assign=args.assign, model_class=type(model).__name__, seed=seed, num_modes=6,
+            checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
+            model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             lr=args.lr, device=str(device), validation_metrics=validation, test_metrics=testing,
             optimizer="AdamW (wd 0.01), 1-epoch linear warmup + cosine to 1e-5, grad clip 1.0, dropout 0.1",
@@ -165,6 +167,10 @@ def main():
         "--assign", choices=("predicted", "anchor"), default="predicted",
         help="v2 only: mode used for the loss (predicted = lowest-ADE mode, anchor = closest anchor)",
     )
+    parser.add_argument("--topology", action="store_true",
+                        help="v2 only: add successor/predecessor lane flags to the attention bias (7 inputs)")
+    parser.add_argument("--scale-inputs", action="store_true",
+                        help="v2 only: divide agent/lane positions by 50 m before the token MLPs")
     args = parser.parse_args()
 
     if args.epochs < 1 or args.batch_size < 1:

@@ -20,8 +20,9 @@ class AgentEncoder(nn.Module):
     so step order is kept and missing steps are visible to the network.
     """
 
-    def __init__(self, d_model=128, steps=5, step_dim=6):
+    def __init__(self, d_model=128, steps=5, step_dim=6, pos_scale=1.0):
         super().__init__()
+        self.pos_scale = pos_scale  # 50.0 = positions in 50 m units, as in the attention bias
         self.history = mlp(steps * (step_dim + 1), d_model)
         self.type_embedding = nn.Embedding(len(AGENT_TYPES), d_model)
         self.size = nn.Linear(2, d_model)
@@ -30,6 +31,8 @@ class AgentEncoder(nn.Module):
 
     def forward(self, batch):
         hist = batch["agent_hist"]                      # (B, A, T, 6)
+        if self.pos_scale != 1.0:
+            hist = torch.cat([hist[..., :2] / self.pos_scale, hist[..., 2:]], dim=-1)
         valid = batch["agent_hist_valid"].float()       # (B, A, T)
         x = torch.cat([hist * valid[..., None], valid[..., None]], dim=-1).flatten(2)  # (B, A, T*7)
 
@@ -42,8 +45,9 @@ class LaneEncoder(nn.Module):
     """One token per lane segment, VectorNet-style: point MLP -> max-pool -> concat -> MLP -> max-pool.
     Point features [x, y, cos, sin] carry the lane direction; a learned flag marks lane connectors."""
 
-    def __init__(self, d_model=128, point_dim=4):
+    def __init__(self, d_model=128, point_dim=4, pos_scale=1.0):
         super().__init__()
+        self.pos_scale = pos_scale
         self.point = mlp(point_dim, d_model)
         self.point2 = mlp(2 * d_model, d_model)
         self.connector_embedding = nn.Embedding(2, d_model)
@@ -55,6 +59,8 @@ class LaneEncoder(nn.Module):
 
     def forward(self, batch):
         points = batch["lane_points"]                   # (B, L, P, 4)
+        if self.pos_scale != 1.0:
+            points = torch.cat([points[..., :2] / self.pos_scale, points[..., 2:]], dim=-1)
         valid = batch["lane_point_valid"]               # (B, L, P)
         has_points = valid.any(-1)                      # padded segments have no valid point
 
@@ -90,10 +96,12 @@ def token_poses(batch):
     return to_pose(agent), to_pose(lane)
 
 
-def rel_features(pose, pos_scale=50.0):
+def rel_features(pose, pos_scale=50.0, adj=None):
     """(B, L, 3) -> (B, L, L, 5): token j seen from token i (eq. 4.1).
     [dx, dy] of j in i's frame (divided by pos_scale), cos and sin of (theta_j - theta_i),
-    and the distance (divided by pos_scale)."""
+    and the distance (divided by pos_scale).
+    With adj (B, L, L) bool, adj[b, i, j] = "j succeeds i": two more features,
+    "j is successor of i" and "j is predecessor of i" -> (B, L, L, 7)."""
     x, y, th = pose.unbind(-1)
     dx = x[:, None, :] - x[:, :, None]          # [b, i, j] = x_j - x_i
     dy = y[:, None, :] - y[:, :, None]
@@ -101,8 +109,10 @@ def rel_features(pose, pos_scale=50.0):
     local_x, local_y = c * dx + s * dy, -s * dx + c * dy   # rotate by -theta_i
     dth = th[:, None, :] - th[:, :, None]
     dist = torch.sqrt(dx ** 2 + dy ** 2 + 1e-6)
-    return torch.stack([local_x / pos_scale, local_y / pos_scale, torch.cos(dth), torch.sin(dth),
-                        dist / pos_scale], dim=-1)
+    feats = [local_x / pos_scale, local_y / pos_scale, torch.cos(dth), torch.sin(dth), dist / pos_scale]
+    if adj is not None:
+        feats += [adj.float(), adj.transpose(1, 2).float()]
+    return torch.stack(feats, dim=-1)
 
 
 class EncoderLayer(nn.Module):
@@ -139,16 +149,17 @@ class SceneEncoder(nn.Module):
     The bias is computed once and shared by all layers.
     """
 
-    def __init__(self, d_model=128, heads=8, layers=3, dropout=0.1):
+    def __init__(self, d_model=128, heads=8, layers=3, dropout=0.1, topology=False):
         super().__init__()
         self.heads = heads
-        self.bias_mlp = nn.Sequential(nn.Linear(5, 64), nn.ReLU(), nn.Linear(64, heads))
+        self.topology = topology
+        self.bias_mlp = nn.Sequential(nn.Linear(7 if topology else 5, 64), nn.ReLU(), nn.Linear(64, heads))
         self.layers = nn.ModuleList([EncoderLayer(d_model, heads, dropout) for _ in range(layers)])
         self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, tokens, pad, pose):
-        """tokens (B, L, d), pad (B, L) True = padding, pose (B, L, 3) -> (B, L, d)."""
-        bias = self.bias_mlp(rel_features(pose)).permute(0, 3, 1, 2)           # (B, H, L, L)
+    def forward(self, tokens, pad, pose, adj=None):
+        """tokens (B, L, d), pad (B, L) True = padding, pose (B, L, 3), adj (B, L, L) if topology -> (B, L, d)."""
+        bias = self.bias_mlp(rel_features(pose, adj=adj if self.topology else None)).permute(0, 3, 1, 2)
         bias = bias.masked_fill(pad[:, None, None, :], float("-inf"))           # padded keys
         x = tokens
         for layer in self.layers:
@@ -241,19 +252,28 @@ class V2Predictor(nn.Module):
     """Agent + lane encoders -> scene transformer -> anchor decoder."""
 
     def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
-                 assign="predicted"):
+                 assign="predicted", topology=False, scale_inputs=False):
         super().__init__()
         self.assign = assign
-        self.agent_encoder = AgentEncoder(d_model)
-        self.lane_encoder = LaneEncoder(d_model)
-        self.scene_encoder = SceneEncoder(d_model, heads, encoder_layers, dropout)
+        self.topology = topology
+        pos_scale = 50.0 if scale_inputs else 1.0
+        self.agent_encoder = AgentEncoder(d_model, pos_scale=pos_scale)
+        self.lane_encoder = LaneEncoder(d_model, pos_scale=pos_scale)
+        self.scene_encoder = SceneEncoder(d_model, heads, encoder_layers, dropout, topology=topology)
         self.decoder = AnchorDecoder(anchors, d_model, heads, decoder_layers, dropout=dropout)
 
     def forward(self, batch):
         agent_pose, lane_pose = token_poses(batch)
         tokens = torch.cat([self.agent_encoder(batch), self.lane_encoder(batch)], dim=1)
         pad = ~torch.cat([batch["agent_mask"], batch["lane_mask"]], dim=1)
-        scene = self.scene_encoder(tokens, pad, torch.cat([agent_pose, lane_pose], dim=1))
+        adj = None
+        if self.topology:
+            # Token-level successor matrix: lane-lane links from lane_adj, zero for any pair with an agent
+            A = batch["agent_mask"].shape[1]
+            N = tokens.shape[1]
+            adj = torch.zeros(len(tokens), N, N, dtype=torch.bool, device=tokens.device)
+            adj[:, A:, A:] = batch["lane_adj"]
+        scene = self.scene_encoder(tokens, pad, torch.cat([agent_pose, lane_pose], dim=1), adj)
         traj, logits = self.decoder(scene, pad)
         return traj, logits
 
