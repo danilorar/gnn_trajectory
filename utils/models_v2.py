@@ -213,13 +213,25 @@ class AnchorDecoder(nn.Module):
         return traj, logits
 
 
-def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0):
-    """Eqs. 6.1-6.2: k* = closest anchor to the true endpoint;
-    L = SmoothL1(traj_k*, Y) over valid steps + score_weight * CE(logits, k*)."""
-    k_star = torch.cdist(target[:, -1:], anchors[None].expand(len(target), -1, -1)).squeeze(1).argmin(-1)  # (B,)
+def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assign="predicted"):
+    """Eqs. 6.1-6.2: L = SmoothL1(traj_k*, Y) over valid steps + score_weight * CE(logits, k*).
+
+    assign="anchor":    k* = anchor closest to the true endpoint
+    assign="predicted": k* = predicted mode with the lowest ADE over the whole path
+                        (winner-takes-all as in v1, HiVT, QCNet); anchors then only initialise the queries.
+    The same k* is the probability target."""
+    valid = target_valid.float()
+    if assign == "anchor":
+        k_star = torch.cdist(target[:, -1:], anchors[None].expand(len(target), -1, -1)).squeeze(1).argmin(-1)
+    elif assign == "predicted":
+        with torch.no_grad():
+            err = (traj - target[:, None]).norm(dim=-1)                                       # (B, K, F)
+            ade = (err * valid[:, None]).sum(-1) / valid.sum(-1, keepdim=True).clamp(min=1)    # (B, K)
+            k_star = ade.argmin(-1)
+    else:
+        raise ValueError(f"unknown assign: {assign}")
     best = traj[torch.arange(len(traj), device=traj.device), k_star]                                      # (B, F, 2)
     reg = F.smooth_l1_loss(best, target, reduction="none").sum(-1)                                        # (B, F)
-    valid = target_valid.float()
     reg = (reg * valid).sum() / valid.sum().clamp(min=1)
     cls = F.cross_entropy(logits, k_star)
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
@@ -228,8 +240,10 @@ def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0):
 class V2Predictor(nn.Module):
     """Agent + lane encoders -> scene transformer -> anchor decoder."""
 
-    def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1):
+    def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
+                 assign="predicted"):
         super().__init__()
+        self.assign = assign
         self.agent_encoder = AgentEncoder(d_model)
         self.lane_encoder = LaneEncoder(d_model)
         self.scene_encoder = SceneEncoder(d_model, heads, encoder_layers, dropout)
@@ -244,4 +258,5 @@ class V2Predictor(nn.Module):
         return traj, logits
 
     def loss(self, batch, traj, logits):
-        return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"], self.decoder.anchors)
+        return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"], self.decoder.anchors,
+                       assign=self.assign)

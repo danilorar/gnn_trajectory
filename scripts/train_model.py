@@ -50,6 +50,7 @@ def evaluate_v2(model, loader, device, miss_threshold=2.0):
     """minADE6 / minFDE6 (same metric code as v1) and miss rate = share of samples with minFDE6 > 2 m."""
     model.eval()
     ade_sum = fde_sum = miss_sum = n = 0.0
+    wins = None
     with torch.no_grad():
         for batch in loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
@@ -57,6 +58,11 @@ def evaluate_v2(model, loader, device, miss_threshold=2.0):
             ade, fde = multimodal_metrics(traj, batch["target_future"])
             ade_sum, fde_sum, n = ade_sum + ade.sum().item(), fde_sum + fde.sum().item(), n + len(ade)
             miss_sum += (fde > miss_threshold).sum().item()
+            # Which mode wins (lowest ADE over the path) per sample, to spot dead modes
+            winner = (traj - batch["target_future"][:, None]).norm(dim=-1).mean(-1).argmin(-1)
+            counts = torch.bincount(winner, minlength=traj.shape[1]).cpu()
+            wins = counts if wins is None else wins + counts
+    evaluate_v2.last_mode_wins = (wins / n).tolist()
     return ade_sum / n, fde_sum / n, miss_sum / n
 
 
@@ -74,7 +80,7 @@ def run_v2(args, seed, device, checkpoint):
                            persistent_workers=True,
                            generator=torch.Generator().manual_seed(seed) if shuffle else None)
 
-    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy")).to(device)
+    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy"), assign=args.assign).to(device)
     val_loader, test_loader = loader("val", False), loader("test", False)
     val_metrics = []
 
@@ -89,7 +95,7 @@ def run_v2(args, seed, device, checkpoint):
             torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(train_loader) - warmup,
                                                        eta_min=1e-5),
         ], milestones=[warmup])
-        print(f"Training v2 | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
+        print(f"Training v2 (assign={args.assign}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
         for epoch in range(1, args.epochs + 1):
@@ -114,6 +120,9 @@ def run_v2(args, seed, device, checkpoint):
             print(f"epoch {epoch:3d} | loss {loss_sum / steps:.3f} (reg {reg_sum / steps:.3f}, "
                   f"cls {cls_sum / steps:.3f}) | val minADE6 {val_ade:.3f} m, minFDE6 {val_fde:.3f} m, "
                   f"miss {val_miss:.1%} | lr {scheduler.get_last_lr()[0]:.1e} | {time.time() - start:.0f}s", flush=True)
+            wins = evaluate_v2.last_mode_wins
+            print("          val mode wins: " + " ".join(f"{w:.1%}" for w in wins)
+                  + ("  <- DEAD MODE (<3%)" if min(wins) < 0.03 else ""), flush=True)
 
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
     names = ("minADE6", "minFDE6", "miss_rate_2m")
@@ -123,7 +132,7 @@ def run_v2(args, seed, device, checkpoint):
 
     if not args.evaluate_only:
         save_run_manifest(
-            checkpoint, model="v2", model_class=type(model).__name__, seed=seed, num_modes=6,
+            checkpoint, model="v2", assign=args.assign, model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             lr=args.lr, device=str(device), validation_metrics=validation, test_metrics=testing,
             optimizer="AdamW (wd 0.01), 1-epoch linear warmup + cosine to 1e-5, grad clip 1.0, dropout 0.1",
@@ -152,6 +161,10 @@ def main():
     parser.add_argument("--checkpoint", type=Path, help="Existing weights for --evaluate-only")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output", type=Path, help="Optional new JSON evaluation summary")
+    parser.add_argument(
+        "--assign", choices=("predicted", "anchor"), default="predicted",
+        help="v2 only: mode used for the loss (predicted = lowest-ADE mode, anchor = closest anchor)",
+    )
     args = parser.parse_args()
 
     if args.epochs < 1 or args.batch_size < 1:
