@@ -26,6 +26,7 @@ from utils.models import (
 from utils.training_utils import multimodal_metrics, read_manifest, set_seed
 
 DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
+DATASET_V2 = PROJECT_ROOT / "data/processed_v2/nuscenes_test_prediction_samples_map.pkl"
 LABELS = ("0-15 deg", "15-30 deg", "30-60 deg", "60+ deg")
 
 
@@ -65,10 +66,10 @@ def main():
     parser.add_argument("--seed", type=int, help="Default: saved checkpoint seed, or 2026")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument(
-        "--model", choices=("multimodal_map", "multimodal_map_gru"),
+        "--model", choices=("multimodal_map", "multimodal_map_gru", "v2"),
         help="Default: saved model name, or multimodal_map_gru",
     )
-    parser.add_argument("--dataset", type=Path, default=DATASET)
+    parser.add_argument("--dataset", type=Path, help="Default: the v1 or v2 test split")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output", type=Path, help="Optional new JSON summary")
@@ -105,6 +106,39 @@ def main():
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
 
+    if args.dataset is None:
+        args.dataset = DATASET_V2 if model_name == "v2" else DATASET
+    if model_name == "v2":
+        ades, fdes, displacements, angles, invalid, n_samples = evaluate_v2(args, device)
+    else:
+        ades, fdes, displacements, angles, invalid, n_samples = evaluate_v1(args, model_name, device, parser)
+    bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples)
+
+
+def evaluate_v2(args, device):
+    """Per-sample minADE6 / minFDE6 of a v2 checkpoint, plus endpoint geometry."""
+    from torch.utils.data import DataLoader as TorchLoader
+    from utils.dataset_v2 import TrajectoryDatasetV2
+    from utils.models_v2 import V2Predictor
+
+    dataset = TrajectoryDatasetV2(args.dataset)
+    geometry = [endpoint_geometry(sample["target_future"]) for sample in dataset.samples]
+    model = V2Predictor(np.load(PROJECT_ROOT / "assets/anchors.npy")).to(device)
+    model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True), strict=True)
+    model.eval()
+    ades, fdes = [], []
+    with torch.no_grad():
+        for batch in TorchLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4):
+            batch = {k: v.to(device) for k, v in batch.items()}
+            ade, fde = multimodal_metrics(model(batch)[0], batch["target_future"])
+            ades.extend(ade.cpu().tolist())
+            fdes.extend(fde.cpu().tolist())
+    displacements, angles = zip(*geometry)
+    return np.asarray(ades), np.asarray(fdes), list(displacements), list(angles), [], len(dataset)
+
+
+def evaluate_v1(args, model_name, device, parser):
+    """Per-sample minADE6 / minFDE6 of a v1 map-aware checkpoint, plus endpoint geometry."""
     with args.dataset.open("rb") as handle:
         samples = pickle.load(handle)
     graphs, displacements, angles, invalid = [], [], [], []
@@ -146,8 +180,10 @@ def main():
             ade, fde = multimodal_metrics(model(batch), batch.y.reshape(-1, 12, 2))
             ades.extend(ade.cpu().tolist())
             fdes.extend(fde.cpu().tolist())
-    ades = np.asarray(ades)
-    fdes = np.asarray(fdes)
+    return np.asarray(ades), np.asarray(fdes), displacements, angles, invalid, len(samples)
+
+
+def bin_and_report(args, model_name, seed, ades, fdes, displacements, angles, invalid, n_samples):
     if not (np.isfinite(ades).all() and np.isfinite(fdes).all()):
         raise ValueError("Non-finite prediction errors")
 
@@ -171,7 +207,7 @@ def main():
         "angle_definition": "abs(degrees(atan2(y_final, x_final))) in target-local frame",
         "minimum_endpoint_displacement_m": 5.0,
         "std_ddof": 0,
-        "input_samples": len(samples),
+        "input_samples": n_samples,
         "invalid_sample_indices": invalid,
         "excluded_displacement_below_5m": int((~moving).sum()),
         "full_test": summarize(ades, fdes),
