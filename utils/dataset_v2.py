@@ -62,6 +62,8 @@ class TrajectoryDatasetV2(Dataset):
     lane_adj          (L, L)     bool, lane_adj[i, j] = segment j succeeds segment i
     target_future     (F, 2)     = agent_future[0]
     target_future_valid (F,)
+    ego_future        (F, 4)     [x, y, cos, sin], the ego plan (input of the ego-plan token, not a label)
+    ego_future_valid  (F,)       bool
     """
 
     def __init__(self, path, max_agents=64, max_lanes=192, max_points=21):
@@ -149,4 +151,6 @@ class TrajectoryDatasetV2(Dataset):
         out = {**self._agents(s), **self._lanes(s)}
         out["target_future"] = out["agent_future"][0]
         out["target_future_valid"] = out["agent_future_valid"][0]
+        out["ego_future"] = s["ego_future"].astype(np.float32)
+        out["ego_future_valid"] = s["ego_future_valid"]
         return {k: torch.from_numpy(np.ascontiguousarray(v)) for k, v in out.items()}

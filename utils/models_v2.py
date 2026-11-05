@@ -42,6 +42,28 @@ class AgentEncoder(nn.Module):
         return h * batch["agent_mask"][..., None]       # padded slots -> 0
 
 
+class EgoPlanEncoder(nn.Module):
+    """One token from the ego's planned 6 s future (block 2): [x, y, cos, sin] per step, flattened with
+    validity flags (as AgentEncoder), plus a learned plan embedding. Its pose is the ego's current pose."""
+
+    def __init__(self, d_model=128, steps=12, step_dim=4, pos_scale=1.0):
+        super().__init__()
+        self.pos_scale = pos_scale
+        self.plan = mlp(steps * (step_dim + 1), d_model)
+        self.plan_embedding = nn.Parameter(torch.zeros(d_model))
+        self.out = mlp(d_model, d_model)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, batch):
+        fut = batch["ego_future"]                       # (B, F, 4)
+        if self.pos_scale != 1.0:
+            fut = torch.cat([fut[..., :2] / self.pos_scale, fut[..., 2:]], dim=-1)
+        valid = batch["ego_future_valid"].float()       # (B, F)
+        x = torch.cat([fut * valid[..., None], valid[..., None]], dim=-1).flatten(1)  # (B, F*5)
+        h = self.plan(x) + self.plan_embedding
+        return self.norm(h + self.out(h))[:, None]      # (B, 1, d)
+
+
 class LaneEncoder(nn.Module):
     """One token per lane segment, VectorNet-style: point MLP -> max-pool -> concat -> MLP -> max-pool.
     Point features [x, y, cos, sin] carry the lane direction; a learned flag marks lane connectors."""
@@ -231,13 +253,22 @@ class AnchorDecoder(nn.Module):
         return traj, logits
 
 
-def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assign="predicted"):
+def soft_score_ce(logits, ade, temperature=1.0):
+    """Block 3: CE against p_k = softmax(-ADE_k / temperature) (ADE in metres, no gradient through it),
+    instead of the one-hot winner. logits / ade (..., K) -> (...)."""
+    p = torch.softmax(-ade.detach() / temperature, dim=-1)
+    return -(p * torch.log_softmax(logits, dim=-1)).sum(-1)
+
+
+def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assign="predicted", soft_scores=False):
     """Eqs. 6.1-6.2: L = SmoothL1(traj_k*, Y) over valid steps + score_weight * CE(logits, k*).
 
     assign="anchor":    k* = anchor closest to the true endpoint
     assign="predicted": k* = predicted mode with the lowest ADE over the whole path
                         (winner-takes-all as in v1, HiVT, QCNet); anchors then only initialise the queries.
-    The same k* is the probability target."""
+    The same k* is the probability target, or with soft_scores=True p_k = softmax(-ADE_k / 1 m)."""
+    if soft_scores and assign != "predicted":
+        raise ValueError("soft_scores needs assign='predicted'")
     valid = target_valid.float()
     if assign == "anchor":
         k_star = torch.cdist(target[:, -1:], anchors[None].expand(len(target), -1, -1)).squeeze(1).argmin(-1)
@@ -251,11 +282,11 @@ def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assig
     best = traj[torch.arange(len(traj), device=traj.device), k_star]                                      # (B, F, 2)
     reg = F.smooth_l1_loss(best, target, reduction="none").sum(-1)                                        # (B, F)
     reg = (reg * valid).sum() / valid.sum().clamp(min=1)
-    cls = F.cross_entropy(logits, k_star)
+    cls = soft_score_ce(logits, ade).mean() if soft_scores else F.cross_entropy(logits, k_star)
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
 
 
-def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1.0):
+def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1.0, soft_scores=False):
     """Predicted winner-takes-all per agent (as v2_loss with assign="predicted"), averaged over agents.
 
     traj (B, M, K, F, 2), logits (B, M, K), future (B, M, F, 2), future_valid (B, M, F),
@@ -265,10 +296,14 @@ def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1
     n_valid = valid.sum(-1).clamp(min=1)                                                # (B, M)
     with torch.no_grad():
         err = (traj - future[:, :, None]).norm(dim=-1)                                  # (B, M, K, F)
-        k_star = ((err * valid[:, :, None]).sum(-1) / n_valid[..., None]).argmin(-1)    # (B, M)
+        ade = (err * valid[:, :, None]).sum(-1) / n_valid[..., None]                    # (B, M, K)
+        k_star = ade.argmin(-1)                                                         # (B, M)
     best = traj.gather(2, k_star[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:]))[:, :, 0]  # (B, M, F, 2)
     reg = (F.smooth_l1_loss(best, future, reduction="none").sum(-1) * valid).sum(-1) / n_valid       # (B, M)
-    cls = F.cross_entropy(logits.reshape(-1, K), k_star.reshape(-1), reduction="none").view(B, M)
+    if soft_scores:
+        cls = soft_score_ce(logits, ade)                                                # (B, M)
+    else:
+        cls = F.cross_entropy(logits.reshape(-1, K), k_star.reshape(-1), reduction="none").view(B, M)
     w = include.float()
     n = w.sum().clamp(min=1)
     reg, cls = (reg * w).sum() / n, (cls * w).sum() / n
@@ -289,37 +324,59 @@ class V2Predictor(nn.Module):
     predict_agents=M>1: target (slot 0) + the M-1 nearest neighbours (slots 2..M; slot 1 = ego is skipped,
     the planner controls it). Each agent's path is predicted in its own frame (origin = its current pose,
     x = its heading) and moved to the target frame; forward returns traj (B, M, K, F, 2), logits (B, M, K),
-    with the target at index 0."""
+    with the target at index 0.
+
+    ego_plan=True (block 2): the ego's planned future becomes one extra scene token at the ego's current pose.
+    In training it is dropped (padded) for each sample with probability plan_drop, so the model also works
+    without a plan; forward(batch, plan=True/False) forces it on/off (default: on in eval).
+    soft_scores=True (block 3): score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner."""
 
     MIN_FUTURE_STEPS = 6  # agents with fewer valid future steps are left out of the loss and the metrics
 
     def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
-                 assign="predicted", topology=False, scale_inputs=False, predict_agents=1):
+                 assign="predicted", topology=False, scale_inputs=False, predict_agents=1,
+                 ego_plan=False, plan_drop=0.5, soft_scores=False):
         super().__init__()
         if predict_agents > 1 and assign != "predicted":
             raise ValueError("multi-agent prediction supports assign='predicted' only")
         self.assign = assign
         self.topology = topology
         self.predict_agents = predict_agents
+        self.ego_plan = ego_plan
+        self.plan_drop = plan_drop
+        self.soft_scores = soft_scores
         self.slots = [0] + list(range(2, predict_agents + 1)) if predict_agents > 1 else [0]
         pos_scale = 50.0 if scale_inputs else 1.0
         self.agent_encoder = AgentEncoder(d_model, pos_scale=pos_scale)
         self.lane_encoder = LaneEncoder(d_model, pos_scale=pos_scale)
         self.scene_encoder = SceneEncoder(d_model, heads, encoder_layers, dropout, topology=topology)
         self.decoder = AnchorDecoder(anchors, d_model, heads, decoder_layers, dropout=dropout)
+        if ego_plan:
+            self.plan_encoder = EgoPlanEncoder(d_model, pos_scale=pos_scale)
 
-    def forward(self, batch):
+    def forward(self, batch, plan=None):
         agent_pose, lane_pose = token_poses(batch)
-        tokens = torch.cat([self.agent_encoder(batch), self.lane_encoder(batch)], dim=1)
-        pad = ~torch.cat([batch["agent_mask"], batch["lane_mask"]], dim=1)
+        tokens = [self.agent_encoder(batch), self.lane_encoder(batch)]
+        pad = [~batch["agent_mask"], ~batch["lane_mask"]]
+        poses = [agent_pose, lane_pose]
+        if self.ego_plan:
+            off = ~batch["ego_future_valid"].any(-1)                                    # (B,) no plan at all
+            if plan is False:
+                off = torch.ones_like(off)
+            elif plan is None and self.training:
+                off = off | (torch.rand(off.shape, device=off.device) < self.plan_drop)
+            tokens.append(self.plan_encoder(batch))
+            pad.append(off[:, None])
+            poses.append(agent_pose[:, 1:2])                                            # ego's current pose
+        tokens, pad, poses = torch.cat(tokens, 1), torch.cat(pad, 1), torch.cat(poses, 1)
         adj = None
         if self.topology:
-            # Token-level successor matrix: lane-lane links from lane_adj, zero for any pair with an agent
-            A = batch["agent_mask"].shape[1]
+            # Token-level successor matrix: lane-lane links from lane_adj, zero for any pair with an agent / plan
+            A, L = batch["agent_mask"].shape[1], batch["lane_mask"].shape[1]
             N = tokens.shape[1]
             adj = torch.zeros(len(tokens), N, N, dtype=torch.bool, device=tokens.device)
-            adj[:, A:, A:] = batch["lane_adj"]
-        scene = self.scene_encoder(tokens, pad, torch.cat([agent_pose, lane_pose], dim=1), adj)
+            adj[:, A:A + L, A:A + L] = batch["lane_adj"]
+        scene = self.scene_encoder(tokens, pad, poses, adj)
         traj, logits = self.decoder(scene, pad, scene[:, self.slots])
         if self.predict_agents == 1:
             return traj[:, 0], logits[:, 0]          # target frame = the target's own frame
@@ -334,5 +391,5 @@ class V2Predictor(nn.Module):
     def loss(self, batch, traj, logits):
         if self.predict_agents == 1:
             return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"],
-                           self.decoder.anchors, assign=self.assign)
-        return multi_agent_loss(traj, logits, *self.agent_targets(batch))
+                           self.decoder.anchors, assign=self.assign, soft_scores=self.soft_scores)
+        return multi_agent_loss(traj, logits, *self.agent_targets(batch), soft_scores=self.soft_scores)

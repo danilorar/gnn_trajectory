@@ -69,46 +69,78 @@ def moving_agents(batch, slots, threshold=1.0):
     return torch.maximum(d_hist, d_fut) > threshold
 
 
-def evaluate_v2(model, loader, device, miss_threshold=2.0):
-    """Target minADE6 / minFDE6 (same metric code as v1) and miss rate = share of samples with minFDE6 > 2 m.
-    For a multi-agent model also sets evaluate_v2.last_all_agents = (minADE6, minFDE6, n agents) over all
-    predicted agents with >= 6 valid future steps (target included), and evaluate_v2.last_moving_agents,
-    the same over the moving ones only (moving_agents: > 1 m from the current position in history or future)."""
+def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
+    """Val/test metrics of a v2 model as a dict.
+
+    Target: minADE6 / minFDE6 (same metric code as v1), miss_rate_2m = share with minFDE6 > 2 m,
+    top1_ADE / top1_FDE of the highest-score mode, mode_wins (share each mode is the lowest-ADE one).
+    Multi-agent models add the same over all predicted agents with >= 6 valid future steps (all_agents_*)
+    and over the moving ones only (moving_agents_*, > 1 m from the current position in history or future):
+    ADE over valid steps, FDE at the last valid step. plan: forwarded to the model (ego-plan on/off)."""
     model.eval()
-    ade_sum = fde_sum = miss_sum = n = 0.0
-    all_ade = all_fde = all_n = 0.0
-    mov_ade = mov_fde = mov_n = 0.0
-    wins = None
+    sums, wins = {}, None
+
+    def add(key, values):
+        sums[key] = sums.get(key, 0.0) + values.sum().item()
+
     with torch.no_grad():
         for batch in loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            traj, _ = model(batch)
+            traj, logits = model(batch, plan=plan) if model.ego_plan else model(batch)
             if traj.ndim == 5:                       # multi-agent: (B, M, K, F, 2), target at index 0
                 future, valid, include = model.agent_targets(batch)
-                a_ade, a_fde = agent_min_errors(traj, future, valid)
-                all_ade += a_ade[include].sum().item()
-                all_fde += a_fde[include].sum().item()
-                all_n += include.sum().item()
                 moving = include & moving_agents(batch, model.slots)
-                mov_ade += a_ade[moving].sum().item()
-                mov_fde += a_fde[moving].sum().item()
-                mov_n += moving.sum().item()
-                traj = traj[:, 0]
-            ade, fde = multimodal_metrics(traj, batch["target_future"])
-            ade_sum, fde_sum, n = ade_sum + ade.sum().item(), fde_sum + fde.sum().item(), n + len(ade)
-            miss_sum += (fde > miss_threshold).sum().item()
-            # Which mode wins (lowest ADE over the path) per sample, to spot dead modes
-            winner = (traj - batch["target_future"][:, None]).norm(dim=-1).mean(-1).argmin(-1)
-            counts = torch.bincount(winner, minlength=traj.shape[1]).cpu()
+                a_ade, a_fde = agent_min_errors(traj, future, valid)
+                top = logits.argmax(-1)[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:])
+                t_ade, t_fde = agent_min_errors(traj.gather(2, top), future, valid)   # 1 mode -> top-1 errors
+                for name, mask in (("all_agents", include), ("moving_agents", moving)):
+                    add(f"{name}_n", mask)
+                    for metric, values in (("minADE6", a_ade), ("minFDE6", a_fde),
+                                           ("top1_ADE", t_ade), ("top1_FDE", t_fde)):
+                        add(f"{name}_{metric}", values[mask])
+                traj, logits = traj[:, 0], logits[:, 0]
+            target = batch["target_future"]
+            ade, fde = multimodal_metrics(traj, target)
+            err = (traj - target[:, None]).norm(dim=-1)                                     # (B, K, F)
+            top1 = err[torch.arange(len(err), device=err.device), logits.argmax(-1)]        # (B, F)
+            add("n", torch.ones_like(ade))
+            add("minADE6", ade)
+            add("minFDE6", fde)
+            add("miss_rate_2m", (fde > miss_threshold).float())
+            add("top1_ADE", top1.mean(-1))
+            add("top1_FDE", top1[:, -1])
+            counts = torch.bincount(err.mean(-1).argmin(-1), minlength=traj.shape[1]).cpu()
             wins = counts if wins is None else wins + counts
-    evaluate_v2.last_mode_wins = (wins / n).tolist()
-    evaluate_v2.last_all_agents = (all_ade / all_n, all_fde / all_n, int(all_n)) if all_n else None
-    evaluate_v2.last_moving_agents = (mov_ade / mov_n, mov_fde / mov_n, int(mov_n)) if mov_n else None
-    return ade_sum / n, fde_sum / n, miss_sum / n
+    n = sums.pop("n")
+    out = {"n": int(n), "mode_wins": (wins / n).tolist()}
+    for key, value in sums.items():
+        if key.endswith("_n"):
+            continue
+        group = key.split("_minADE6")[0].split("_minFDE6")[0].split("_top1")[0]
+        out[key] = value / (sums[f"{group}_n"] if group in ("all_agents", "moving_agents") else n)
+    for group in ("all_agents", "moving_agents"):
+        if f"{group}_n" in sums:
+            out[f"{group}_n"] = int(sums[f"{group}_n"])
+    return out
+
+
+def format_v2(m):
+    """One or two log lines for an evaluate_v2 dict."""
+    line = (f"minADE6 {m['minADE6']:.3f} m, minFDE6 {m['minFDE6']:.3f} m, miss {m['miss_rate_2m']:.1%}, "
+            f"top-1 ADE {m['top1_ADE']:.3f} / FDE {m['top1_FDE']:.3f} m")
+    if "moving_agents_n" in m:
+        line += (f" | moving agents ({m['moving_agents_n']}): minADE6 {m['moving_agents_minADE6']:.3f}, "
+                 f"minFDE6 {m['moving_agents_minFDE6']:.3f}, top-1 ADE {m['moving_agents_top1_ADE']:.3f} / "
+                 f"FDE {m['moving_agents_top1_FDE']:.3f} m | all agents ({m['all_agents_n']}): "
+                 f"minADE6 {m['all_agents_minADE6']:.3f}")
+    return line
 
 
 def run_v2(args, seed, device, checkpoint):
-    """Train / evaluate the v2 scene transformer (dict batches from data/processed_v2)."""
+    """Train / evaluate the v2 scene transformer (dict batches from data/processed_v2).
+
+    With --ego-plan, val is logged with the plan on and off; checkpointing and early stopping use
+    target minADE6 with the plan on (the planner always provides a plan)."""
     import time
     from torch.utils.data import DataLoader as TorchLoader
     from utils.dataset_v2 import TrajectoryDatasetV2
@@ -123,7 +155,13 @@ def run_v2(args, seed, device, checkpoint):
 
     model = V2Predictor(np.load(PROJECT_ROOT / args.anchors), assign=args.assign,
                         topology=args.topology, scale_inputs=args.scale_inputs,
-                        predict_agents=args.predict_agents).to(device)
+                        predict_agents=args.predict_agents, ego_plan=args.ego_plan,
+                        soft_scores=args.soft_scores).to(device)
+    plans = (("plan on", True), ("plan off", False)) if args.ego_plan else (("", None),)
+
+    def evaluate_all(loader_):
+        return {label or "default": evaluate_v2(model, loader_, device, plan) for label, plan in plans}
+
     val_loader, test_loader = loader("val", False), loader("test", False)
     val_metrics = []
     stopped_epoch = None
@@ -136,11 +174,12 @@ def run_v2(args, seed, device, checkpoint):
         warmup = len(train_loader)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
             torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=warmup),
-            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(train_loader) - warmup,
+            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs * len(train_loader) - warmup),
                                                        eta_min=1e-5),
         ], milestones=[warmup])
         print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}, "
-              f"predict_agents={args.predict_agents}, anchors={args.anchors}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
+              f"predict_agents={args.predict_agents}, ego_plan={args.ego_plan}, soft_scores={args.soft_scores}, "
+              f"anchors={args.anchors}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
         for epoch in range(1, args.epochs + 1):
@@ -158,23 +197,18 @@ def run_v2(args, seed, device, checkpoint):
                 loss_sum, reg_sum, cls_sum = loss_sum + loss.item(), reg_sum + parts["reg"], cls_sum + parts["cls"]
 
             steps = len(train_loader)
-            val_ade, val_fde, val_miss = evaluate_v2(model, val_loader, device)
-            val_metrics.append(val_ade)
-            if val_ade == min(val_metrics):
+            train_time = time.time() - start
+            val = evaluate_all(val_loader)
+            main = next(iter(val.values()))                    # plan on (or the only one)
+            val_metrics.append(main["minADE6"])
+            if main["minADE6"] == min(val_metrics):
                 torch.save(model.state_dict(), checkpoint)
             best_epoch = int(np.argmin(val_metrics)) + 1
             print(f"epoch {epoch:3d} | loss {loss_sum / steps:.3f} (reg {reg_sum / steps:.3f}, "
-                  f"cls {cls_sum / steps:.3f}) | val minADE6 {val_ade:.3f} m, minFDE6 {val_fde:.3f} m, "
-                  f"miss {val_miss:.1%} | lr {scheduler.get_last_lr()[0]:.1e} | {time.time() - start:.0f}s", flush=True)
-            if evaluate_v2.last_all_agents:
-                a_ade, a_fde, a_n = evaluate_v2.last_all_agents
-                print(f"          val all agents: minADE6 {a_ade:.3f} m, minFDE6 {a_fde:.3f} m ({a_n} agents)",
-                      flush=True)
-            if evaluate_v2.last_moving_agents:
-                a_ade, a_fde, a_n = evaluate_v2.last_moving_agents
-                print(f"          val moving agents (>1 m): minADE6 {a_ade:.3f} m, minFDE6 {a_fde:.3f} m ({a_n} agents)",
-                      flush=True)
-            wins = evaluate_v2.last_mode_wins
+                  f"cls {cls_sum / steps:.3f}) | lr {scheduler.get_last_lr()[0]:.1e} | {train_time:.0f}s", flush=True)
+            for label, m in val.items():
+                print(f"          val{' ' + label if label != 'default' else ''}: {format_v2(m)}", flush=True)
+            wins = main["mode_wins"]
             print("          val mode wins: " + " ".join(f"{w:.1%}" for w in wins)
                   + ("  <- DEAD MODE (<3%)" if min(wins) < 0.03 else ""), flush=True)
 
@@ -186,27 +220,17 @@ def run_v2(args, seed, device, checkpoint):
                 break
 
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
-    names = ("minADE6", "minFDE6", "miss_rate_2m")
-    validation = dict(zip(names, map(float, evaluate_v2(model, val_loader, device))))
-    if evaluate_v2.last_all_agents:
-        validation["all_agents_minADE6"], validation["all_agents_minFDE6"], validation["all_agents_n"] = \
-            evaluate_v2.last_all_agents
-    if evaluate_v2.last_moving_agents:
-        validation["moving_agents_minADE6"], validation["moving_agents_minFDE6"], validation["moving_agents_n"] = \
-            evaluate_v2.last_moving_agents
+    validation = evaluate_all(val_loader)
     # Test is evaluated once, on the best-val checkpoint, only after training (settings are chosen on val).
-    testing = dict(zip(names, map(float, evaluate_v2(model, test_loader, device))))
-    if evaluate_v2.last_all_agents:
-        testing["all_agents_minADE6"], testing["all_agents_minFDE6"], testing["all_agents_n"] = \
-            evaluate_v2.last_all_agents
-    if evaluate_v2.last_moving_agents:
-        testing["moving_agents_minADE6"], testing["moving_agents_minFDE6"], testing["moving_agents_n"] = \
-            evaluate_v2.last_moving_agents
+    testing = evaluate_all(test_loader)
+    if not args.ego_plan:                                     # keep the old flat manifest layout
+        validation, testing = validation["default"], testing["default"]
 
     if not args.evaluate_only:
         save_run_manifest(
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
-            predict_agents=args.predict_agents,
+            predict_agents=args.predict_agents, ego_plan=args.ego_plan, plan_drop=0.5 if args.ego_plan else None,
+            soft_scores=args.soft_scores,
             model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             patience=args.patience, stopped_epoch=stopped_epoch, epochs_trained=len(val_metrics),
@@ -216,8 +240,8 @@ def run_v2(args, seed, device, checkpoint):
         )
     print("Final results | model=v2 | seed=%d" % seed)
     for label, m in (("Validation", validation), ("Test", testing)):
-        print(f"{label}: minADE6: {m['minADE6']:.6f} m | minFDE6: {m['minFDE6']:.6f} m | "
-              f"miss rate (>2 m): {m['miss_rate_2m']:.4f}")
+        for sub, mm in (m.items() if args.ego_plan else (("", m),)):
+            print(f"{label}{' ' + sub if sub else ''}: {format_v2(mm)}")
     print(f"Checkpoint: {checkpoint}")
     return validation, testing
 
@@ -247,6 +271,10 @@ def main():
                         help="v2 only: anchor file (K, 2), relative to the project root")
     parser.add_argument("--predict-agents", type=int, default=1,
                         help="v2 only: 1 = target only; 16 = target + 15 nearest neighbours (ego slot skipped)")
+    parser.add_argument("--ego-plan", action="store_true",
+                        help="v2 only: ego planned future as an extra scene token (dropped with p=0.5 in training)")
+    parser.add_argument("--soft-scores", action="store_true",
+                        help="v2 only: score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner")
     parser.add_argument("--topology", action="store_true",
                         help="v2 only: add successor/predecessor lane flags to the attention bias (7 inputs)")
     parser.add_argument("--scale-inputs", action="store_true",
