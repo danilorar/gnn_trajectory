@@ -64,7 +64,7 @@ class TrajectoryDatasetV2(Dataset):
     target_future_valid (F,)
     """
 
-    def __init__(self, path, max_agents=32, max_lanes=128, max_points=21):
+    def __init__(self, path, max_agents=64, max_lanes=192, max_points=21):
         with open(path, "rb") as f:
             self.samples = pickle.load(f)
         self.max_agents = max_agents
