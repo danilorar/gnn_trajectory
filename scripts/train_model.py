@@ -179,7 +179,8 @@ def run_v2(args, seed, device, checkpoint):
     model = V2Predictor(np.load(PROJECT_ROOT / args.anchors), assign=args.assign,
                         topology=args.topology, scale_inputs=args.scale_inputs,
                         predict_agents=args.predict_agents, ego_plan=args.ego_plan,
-                        soft_scores=args.soft_scores, target_split=args.target_split).to(device)
+                        soft_scores=args.soft_scores, target_split=args.target_split,
+                        plan_queries=args.plan_queries, plan_drop=args.plan_drop).to(device)
     plans = (("plan on", True), ("plan off", False)) if args.ego_plan else (("", None),)
 
     def evaluate_all(loader_):
@@ -202,7 +203,7 @@ def run_v2(args, seed, device, checkpoint):
         ], milestones=[warmup])
         print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}, "
               f"predict_agents={args.predict_agents}, ego_plan={args.ego_plan}, soft_scores={args.soft_scores}, "
-              f"target_split={args.target_split}, "
+              f"target_split={args.target_split}, plan_queries={args.plan_queries}, plan_drop={args.plan_drop}, "
               f"anchors={args.anchors}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
@@ -254,7 +255,8 @@ def run_v2(args, seed, device, checkpoint):
     if not args.evaluate_only:
         save_run_manifest(
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
-            predict_agents=args.predict_agents, ego_plan=args.ego_plan, plan_drop=0.5 if args.ego_plan else None,
+            predict_agents=args.predict_agents, ego_plan=args.ego_plan, plan_drop=args.plan_drop if args.ego_plan else None,
+            plan_queries=args.plan_queries,
             soft_scores=args.soft_scores, target_split=args.target_split, patience_start=args.patience_start,
             train_fraction=args.train_fraction,
             model_class=type(model).__name__, seed=seed, num_modes=6,
@@ -305,6 +307,10 @@ def main():
                         help="v2 only: 1 = target only; 16 = target + 15 nearest neighbours (ego slot skipped)")
     parser.add_argument("--ego-plan", action="store_true",
                         help="v2 only: ego planned future as an extra scene token (dropped with p=0.5 in training)")
+    parser.add_argument("--plan-drop", type=float, default=0.5,
+                        help="v2 --ego-plan: probability of dropping the plan per training sample")
+    parser.add_argument("--plan-queries", action="store_true",
+                        help="v2 --ego-plan: also add the ego plan (in each agent's own frame) to its decoder queries")
     parser.add_argument("--soft-scores", action="store_true",
                         help="v2 only: score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner")
     parser.add_argument("--topology", action="store_true",

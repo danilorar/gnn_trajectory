@@ -324,6 +324,13 @@ def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
 
 
+def to_agent_frames(points, pose):
+    """points (B, F, 2) in the target frame -> (B, M, F, 2) in each agent's own frame; pose (B, M, 3)."""
+    c, s = torch.cos(pose[..., 2])[..., None], torch.sin(pose[..., 2])[..., None]          # (B, M, 1)
+    d = points[:, None] - pose[..., None, :2]                                               # (B, M, F, 2)
+    return torch.stack([c * d[..., 0] + s * d[..., 1], -s * d[..., 0] + c * d[..., 1]], -1)
+
+
 def to_target_frame(traj, pose):
     """traj (B, M, K, F, 2) in each agent's own frame, pose (B, M, 3) = agent (x, y, theta) in the target frame."""
     c, s = torch.cos(pose[..., 2])[..., None, None], torch.sin(pose[..., 2])[..., None, None]
@@ -344,13 +351,16 @@ class V2Predictor(nn.Module):
     In training it is dropped (padded) for each sample with probability plan_drop, so the model also works
     without a plan; forward(batch, plan=True/False) forces it on/off (default: on in eval).
     soft_scores=True (block 3): score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner.
-    target_split=True: multi-agent loss = target loss + mean of the other agents' losses."""
+    target_split=True: multi-agent loss = target loss + mean of the other agents' losses.
+    plan_queries=True (needs ego_plan): the ego plan, expressed in each predicted agent's own frame (F x 2,
+    in 50 m units, masked by ego_future_valid), goes through an MLP and is added to that agent's decoder
+    queries, so every agent sees where the ego will be relative to itself. Zero when the plan is dropped/off."""
 
     MIN_FUTURE_STEPS = 6  # agents with fewer valid future steps are left out of the loss and the metrics
 
     def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
                  assign="predicted", topology=False, scale_inputs=False, predict_agents=1,
-                 ego_plan=False, plan_drop=0.5, soft_scores=False, target_split=False):
+                 ego_plan=False, plan_drop=0.5, soft_scores=False, target_split=False, plan_queries=False):
         super().__init__()
         if predict_agents > 1 and assign != "predicted":
             raise ValueError("multi-agent prediction supports assign='predicted' only")
@@ -359,6 +369,10 @@ class V2Predictor(nn.Module):
         self.predict_agents = predict_agents
         self.ego_plan = ego_plan
         self.plan_drop = plan_drop
+        if plan_queries and not ego_plan:
+            raise ValueError("plan_queries needs ego_plan=True")
+        self.plan_queries = plan_queries
+        self.pos_scale_plan = 50.0
         self.soft_scores = soft_scores
         self.target_split = target_split
         self.slots = [0] + list(range(2, predict_agents + 1)) if predict_agents > 1 else [0]
@@ -369,6 +383,8 @@ class V2Predictor(nn.Module):
         self.decoder = AnchorDecoder(anchors, d_model, heads, decoder_layers, dropout=dropout)
         if ego_plan:
             self.plan_encoder = EgoPlanEncoder(d_model, pos_scale=pos_scale)
+        if plan_queries:
+            self.plan_query_mlp = mlp(2 * 12, d_model)
 
     def forward(self, batch, plan=None):
         agent_pose, lane_pose = token_poses(batch)
@@ -393,7 +409,12 @@ class V2Predictor(nn.Module):
             adj = torch.zeros(len(tokens), N, N, dtype=torch.bool, device=tokens.device)
             adj[:, A:A + L, A:A + L] = batch["lane_adj"]
         scene = self.scene_encoder(tokens, pad, poses, adj)
-        traj, logits = self.decoder(scene, pad, scene[:, self.slots])
+        agents = scene[:, self.slots]
+        if self.plan_queries:
+            local = to_agent_frames(batch["ego_future"][..., :2], agent_pose[:, self.slots])     # (B, M, F, 2)
+            local = local * batch["ego_future_valid"][:, None, :, None] / self.pos_scale_plan
+            agents = agents + self.plan_query_mlp(local.flatten(2)) * (~off)[:, None, None]
+        traj, logits = self.decoder(scene, pad, agents)
         if self.predict_agents == 1:
             return traj[:, 0], logits[:, 0]          # target frame = the target's own frame
         return to_target_frame(traj, agent_pose[:, self.slots]), logits
