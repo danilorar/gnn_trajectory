@@ -31,3 +31,4 @@ outputs/
 /sim/metadrive/
 /sim/scenarionet/
 /sim/scenarios/
+/sim/nuscenes_test150_tables/

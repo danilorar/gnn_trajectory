@@ -41,6 +41,86 @@ def check_metadrive(steps):
         env.close()
 
 
+def stream_table(root, table):
+    import ijson
+    with open(root / f"{table}.json", "rb") as f:
+        yield from ijson.items(f, "item", use_float=True)
+
+
+def subset_tables(names, out_root, source=PROJECT_ROOT / "data/v1.0-trainval"):
+    """Stream-filter the trainval tables (ijson, low RAM) down to the scenes `names`; written as a
+    v1.0-trainval table set under out_root (maps symlinked), which the devkit loads like the full one."""
+    import json
+    out = out_root / "v1.0-trainval"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def save(table, rows):
+        (out / f"{table}.json").write_text(json.dumps(rows))
+        print(f"  {table}: {len(rows)}", flush=True)
+
+    scenes = [r for r in stream_table(source, "scene") if r["name"] in set(names)]
+    scene_tokens, log_tokens = {r["token"] for r in scenes}, {r["log_token"] for r in scenes}
+    save("scene", scenes)
+    samples = [r for r in stream_table(source, "sample") if r["scene_token"] in scene_tokens]
+    sample_tokens = {r["token"] for r in samples}
+    save("sample", samples)
+    sd = [r for r in stream_table(source, "sample_data") if r["sample_token"] in sample_tokens]
+    save("sample_data", sd)
+    ego, cal = {r["ego_pose_token"] for r in sd}, {r["calibrated_sensor_token"] for r in sd}
+    del sd
+    save("ego_pose", [r for r in stream_table(source, "ego_pose") if r["token"] in ego])
+    save("calibrated_sensor", [r for r in stream_table(source, "calibrated_sensor") if r["token"] in cal])
+    anns = [r for r in stream_table(source, "sample_annotation") if r["sample_token"] in sample_tokens]
+    inst = {r["instance_token"] for r in anns}
+    save("sample_annotation", anns)
+    del anns
+    save("instance", [r for r in stream_table(source, "instance") if r["token"] in inst])
+    save("log", [r for r in stream_table(source, "log") if r["token"] in log_tokens])
+    save("map", [{**r, "log_tokens": [t for t in r["log_tokens"] if t in log_tokens]}
+                 for r in stream_table(source, "map") if log_tokens & set(r["log_tokens"])])
+    for table in ("category", "attribute", "visibility", "sensor"):
+        save(table, list(stream_table(source, table)))
+    if not (out_root / "maps").exists():
+        (out_root / "maps").symlink_to(PROJECT_ROOT / "data/maps", target_is_directory=True)
+    return len(scenes)
+
+
+def convert_test(n_scenes, workers):
+    """Official nuScenes val scenes (= the scenes of our test split; never used for training or model
+    selection), minus the mini scenes already used to develop the planner, converted with ScenarioNet into
+    sim/scenarios/nuscenes_test150. The first n_scenes in name order are used."""
+    import json
+    import pickle
+    from nuscenes.utils.splits import create_splits_scenes
+    from nuscenes import NuScenes
+    from scenarionet.converter.nuscenes.utils import convert_nuscenes_scenario
+    from scenarionet.converter.utils import write_to_directory
+
+    splits = create_splits_scenes()
+    dev = set(splits["mini_train"] + splits["mini_val"])
+    test_tokens = {s["scene_token"] for s in pickle.loads(
+        (PROJECT_ROOT / "data/processed_v2/nuscenes_test_prediction_samples_map.pkl").read_bytes())}
+    token_to_name = {r["token"]: r["name"] for r in stream_table(PROJECT_ROOT / "data/v1.0-trainval", "scene")}
+    test_names = {token_to_name[t] for t in test_tokens}
+    names = sorted(n for n in splits["val"] if n not in dev)[:n_scenes]
+    print(f"official val scenes: {len(splits['val'])}, minus {len(set(splits['val']) & dev)} mini scenes used in "
+          f"development -> {len(names)} scenes; {sum(n in test_names for n in names)} of them have test-split "
+          f"prediction samples, {sum(n not in test_names for n in names)} have none")
+    root = PROJECT_ROOT / "sim/nuscenes_test150_tables"
+    if not (root / "v1.0-trainval/scene.json").exists():
+        subset_tables(names, root)
+    nusc = NuScenes(version="v1.0-trainval", dataroot=str(root), verbose=False)
+    scenes = [s for s in nusc.scene if s["name"] in set(names)]
+    out = PROJECT_ROOT / "sim/scenarios/nuscenes_test150"
+    write_to_directory(convert_func=convert_nuscenes_scenario, scenarios=scenes, output_path=str(out),
+                       dataset_version="v1.0-trainval", dataset_name="nuscenes", overwrite=True, num_workers=workers,
+                       nuscenes=[nusc] * workers, past=[2] * workers, future=[6] * workers,
+                       prediction=[False] * workers, map_radius=[500] * workers)
+    (out / "scene_list.json").write_text(json.dumps({"scenes": [s["name"] for s in scenes],
+                                                     "with_test_samples": sorted(n for n in names if n in test_names),
+                                                     "excluded_dev_mini": sorted(set(splits["val"]) & dev)}, indent=1))
+
+
 def convert(n_scenes):
     """ScenarioNet's nuScenes converter (the calls of scenarionet/convert_nuscenes.py, 1 worker, first n scenes)."""
     from nuscenes import NuScenes
@@ -497,7 +577,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
     sub.add_parser("metadrive").add_argument("--steps", type=int, default=20)
-    sub.add_parser("convert").add_argument("--scenes", type=int, default=5)
+    p = sub.add_parser("convert")
+    p.add_argument("--scenes", type=int, default=5)
+    p.add_argument("--set", choices=("mini", "test150"), default="mini",
+                   help="mini: data/nuscenes_mini; test150: official val scenes minus the dev mini scenes")
+    p.add_argument("--workers", type=int, default=4)
     p = sub.add_parser("replay")
     p.add_argument("--index", type=int, default=0)
     p.add_argument("--max-steps", type=int, default=200)
@@ -523,7 +607,7 @@ if __name__ == "__main__":
     if args.step == "metadrive":
         check_metadrive(args.steps)
     elif args.step == "convert":
-        convert(args.scenes)
+        convert_test(args.scenes, args.workers) if args.set == "test150" else convert(args.scenes)
     elif args.step == "plan":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
              args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json")
