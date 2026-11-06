@@ -452,7 +452,8 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
                   f"{'yes' if m['offroad_steps'] else 'no':>8s} | {m['progress_ratio']:8.2f} | {m['max_acc']:8.2f} | "
                   f"{m['max_jerk']:10.2f} | {ms}")
     for label, rows in results.items():
-        ms = f"{np.median([m['plan_ms'] for m in rows]):.0f}" if label != "expert (log)" else ""
+        ms = (f"{np.median([m['plan_ms'] for m in rows]):.0f} (predict {np.median([m['predict_ms'] for m in rows]):.0f}"
+              f" + cost {np.median([m['cost_ms'] for m in rows]):.0f})") if label != "expert (log)" else ""
         print(f" {'MEAN':10s} | {label:14s} | {np.mean([m['at_fault'] for m in rows]):8.2f} | "
               f"{np.mean([m['not_at_fault'] for m in rows]):12.2f} | {np.mean([m['offroad_steps'] > 0 for m in rows]):8.0%} | "
               f"{np.nanmean([m['progress_ratio'] for m in rows]):8.2f} | {np.mean([m['max_acc'] for m in rows]):8.2f} | "

@@ -192,10 +192,59 @@ def build_sample(buffer, map_features, target_id, ego_plan=None, ego_plan_valid=
     }
 
 
-def to_model_inputs(sample, max_agents=64, max_lanes=192, max_points=21):
-    """The dict of tensors TrajectoryDatasetV2.__getitem__ returns, for one adapter sample."""
+def ego_order(sample):
+    """Neighbour indices (>= 1 in the sample arrays) sorted by current distance to the ego."""
+    ego = sample["ego_past"][-1, :2] if sample["ego_past_valid"][-1] else np.zeros(2, np.float32)
+    return 1 + np.argsort(np.linalg.norm(sample["agent_past"][1:, -1, :2] - ego, axis=-1), kind="stable")
+
+
+def _ego_ordered_dataset():
+    """TrajectoryDatasetV2 whose neighbours are sorted by distance to the ego instead of the target.
+    Target stays slot 0, ego slot 1; the model has no positional encoding over agents, so the order only
+    decides which agents fill the predicted slots 2..M and which are cut at max_agents."""
+    from utils.dataset_v2 import EGO_SIZE, EGO_TYPE, AGENT_TYPES, TrajectoryDatasetV2, add_velocity, agent_type
+
+    class EgoOrdered(TrajectoryDatasetV2):
+        def _agents(self, s):                     # = TrajectoryDatasetV2._agents with another sort key
+            A = self.max_agents
+            T, F = s["agent_past"].shape[1], s["agent_future"].shape[1]
+            hist = add_velocity(s["agent_past"], s["agent_past_valid"])
+            ego_hist = add_velocity(s["ego_past"][None], s["ego_past_valid"][None])
+            types = np.array([agent_type(c) for c in s["agent_categories"]], dtype=np.int64)
+            order = np.concatenate([[0], ego_order(s)])[: A - 1]
+            n = len(order) + 1
+            out = {
+                "agent_hist": np.zeros((A, T, 6), np.float32),
+                "agent_hist_valid": np.zeros((A, T), bool),
+                "agent_type": np.full(A, AGENT_TYPES.index("other"), np.int64),
+                "agent_size": np.zeros((A, 2), np.float32),
+                "agent_mask": np.zeros(A, bool),
+                "agent_future": np.zeros((A, F, 2), np.float32),
+                "agent_future_valid": np.zeros((A, F), bool),
+            }
+            slots = np.concatenate([[0], np.arange(2, n)])
+            out["agent_hist"][slots] = hist[order]
+            out["agent_hist_valid"][slots] = s["agent_past_valid"][order]
+            out["agent_type"][slots] = types[order]
+            out["agent_size"][slots] = s["agent_size"][order]
+            out["agent_future"][slots] = s["agent_future"][order, :, :2]
+            out["agent_future_valid"][slots] = s["agent_future_valid"][order]
+            out["agent_hist"][1] = ego_hist[0]
+            out["agent_hist_valid"][1] = s["ego_past_valid"]
+            out["agent_type"][1] = EGO_TYPE
+            out["agent_size"][1] = EGO_SIZE
+            out["agent_mask"][:n] = True
+            return out
+
+    return EgoOrdered
+
+
+def to_model_inputs(sample, max_agents=64, max_lanes=192, max_points=21, order="target"):
+    """The dict of tensors TrajectoryDatasetV2.__getitem__ returns, for one adapter sample.
+    order="ego": neighbours sorted by distance to the ego (for planning); "target": as in training."""
     from utils.dataset_v2 import TrajectoryDatasetV2
 
-    ds = TrajectoryDatasetV2.__new__(TrajectoryDatasetV2)   # reuse the conversion code, no file needed
+    cls = _ego_ordered_dataset() if order == "ego" else TrajectoryDatasetV2
+    ds = cls.__new__(cls)                           # reuse the conversion code, no file needed
     ds.samples, ds.max_agents, ds.max_lanes, ds.max_points = [sample], max_agents, max_lanes, max_points
     return ds[0]

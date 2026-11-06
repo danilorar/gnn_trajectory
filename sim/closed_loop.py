@@ -9,8 +9,10 @@ Predictor interface:  predict(scene, plans) -> paths (P, A, K, 12, 2) world xy a
 CVPredictor:          constant speed and heading per agent, K = 1, prob 1, the same for every plan.
 WorldModelPredictor:  the v2 model (e.g. run (d) epoch 28) through sim/adapter.py, K = 6, plan-dependent.
 
-Cost per plan (lowest wins):
+Cost per plan (lowest wins), weights FROZEN on 2026-11-06 after the 10-scene mini run (WEIGHTS, VETO):
     col * risk + progress_w * (-progress) + comfort_w * comfort + offset_w * offset^2
+    hard veto: a plan whose risk from collisions in the first VETO["horizon_s"] = 2 s exceeds VETO["risk"] = 0.3
+    is not allowed (if every plan is vetoed, the one with the lowest early risk is taken).
     risk     = sum_agents sum_k p_k * 1[overlap at some t] / (1 + t_first), footprints of 3 circles (r = 1 m)
                along vehicles (1 circle r = 0.5 m for pedestrians / small objects), every 0.1 s;
                agents behind the ego in its lane (rear-end is the follower's job) are ignored.
@@ -29,7 +31,8 @@ import numpy as np
 from sim.adapter import EGO_ID, HistoryBuffer, snapshot_from_env
 from sim.planner import DT, OFFSETS, SPEEDS, Tracker, generate_plans, reference_from_scenario
 
-WEIGHTS = dict(col=100.0, progress=1.0, comfort=0.1, offset=0.5)
+WEIGHTS = dict(col=500.0, progress=1.0, comfort=0.1, offset=0.5)       # frozen
+VETO = dict(risk=0.3, horizon_s=2.0)                                     # frozen
 VEHICLE_TYPES = ("vehicle.",)
 STEP_TIMES = np.arange(1, 13) * 0.5            # model output times
 DENSE_TIMES = np.arange(0, 61) * DT            # 0 ... 6 s
@@ -107,7 +110,7 @@ class WorldModelPredictor:
             return np.repeat(paths, 6, axis=2), np.repeat(probs, 6, axis=2) / 6, ids
         target = min(cands)[1]
         sample = build_sample(scene.buffer, scene.map_features, target, ego_plan=plans[0])
-        item = to_model_inputs(sample)
+        item = to_model_inputs(sample, order="ego")                         # slots 2..16 = nearest to the ego
         P = len(plans)
         batch = {k: v[None].expand(P, *v.shape).contiguous().to(self.device) for k, v in item.items()}
         tx, ty, tyaw = scene.buffer.now()[target][:3]
@@ -116,10 +119,10 @@ class WorldModelPredictor:
         with torch.no_grad():
             traj, logits = self.model(batch, plan=True)                     # (P, M, 6, 12, 2) target frame
         traj, pr = traj.cpu().numpy(), logits.softmax(-1).cpu().numpy()
-        # slot -> object id, with the dataset's ordering (target, ego, neighbours by distance to the target)
+        # slot -> object id (target, ego, then neighbours by distance to the ego, as to_model_inputs(order="ego"))
+        from sim.adapter import ego_order
         order_ids = sample["agent_instance_tokens"]
-        dist = np.linalg.norm(sample["agent_past"][1:, -1, :2], axis=-1)
-        neighbours = [order_ids[1 + j] for j in np.argsort(dist, kind="stable")][:62]
+        neighbours = [order_ids[j] for j in ego_order(sample)][:62]
         slot_ids = {0: target, **{2 + j: n for j, n in enumerate(neighbours)}}
         c, s = np.cos(tyaw), np.sin(tyaw)
         world = np.stack([tx + c * traj[..., 0] - s * traj[..., 1], ty + s * traj[..., 0] + c * traj[..., 1]], -1)
@@ -136,54 +139,78 @@ class WorldModelPredictor:
         return out_paths, out_probs, ids
 
 
-def footprint(xy, yaw, length, width, vehicle):
-    """Circle centres (..., C, 2) and radius: 3 circles along a vehicle, 1 for anything else."""
-    if not vehicle:
-        return xy[..., None, :], 0.5
-    offs = np.array([-1.0, 0.0, 1.0]) * max(length / 2 - 1.0, 0.0)
-    d = np.stack([np.cos(yaw), np.sin(yaw)], -1)
-    return xy[..., None, :] + offs[:, None] * d[..., None, :], 1.0
+def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, ego_size, device, chunk=32):
+    """Vectorised (torch) collision risk per plan.
+
+    dense_plans (P, 61, 4) ego (x, y, yaw, v) every 0.1 s; paths (P, A, K, 12, 2) at 0.5 ... 6 s; probs (P, A, K);
+    current (A, 2) and yaw (A,) now; sizes (A, 2) (width, length); is_vehicle (A,).
+    Footprints: 3 circles (r = 1 m) along vehicles, 1 circle (r = 0.5 m) otherwise; agent headings from the
+    predicted motion, or the current heading while (nearly) standing still.
+    Returns risk (P,) = sum_a sum_k p_k / (1 + t_first) and early (P,) = the same counting only t_first <= 2 s."""
+    import torch
+    f32 = dict(device=device, dtype=torch.float32)
+    P, A, K = probs.shape
+    risk, early = torch.zeros(P, **f32), torch.zeros(P, **f32)
+    if A == 0:
+        return risk.cpu().numpy(), early.cpu().numpy()
+    plan = torch.as_tensor(dense_plans, **f32)
+    ed = torch.stack([torch.cos(plan[..., 2]), torch.sin(plan[..., 2])], -1)              # (P, 61, 2)
+    e_off = torch.tensor([-1.0, 0.0, 1.0], **f32) * max(ego_size[1] / 2 - 1.0, 0.0)
+    ego_c = plan[..., None, :2] + e_off[:, None] * ed[..., None, :]                         # (P, 61, 3, 2)
+    t_in = torch.arange(13, **f32) * 0.5
+    t_out = torch.arange(61, **f32) * DT
+    i0 = torch.clamp(torch.searchsorted(t_in, t_out, right=True) - 1, 0, 11)
+    w = ((t_out - t_in[i0]) / 0.5)[:, None]
+    times = t_out
+    for lo in range(0, A, chunk):
+        sl = slice(lo, min(A, lo + chunk))
+        pa = torch.as_tensor(paths[:, sl], **f32)                                          # (P, a, K, 12, 2)
+        cur = torch.as_tensor(current[sl], **f32)
+        full = torch.cat([cur[None, :, None, None].expand(P, -1, K, 1, 2), pa], 3)         # (P, a, K, 13, 2)
+        dense = full[..., i0, :] * (1 - w) + full[..., i0 + 1, :] * w                      # (P, a, K, 61, 2)
+        step = torch.diff(dense, dim=3, append=2 * dense[..., -1:, :] - dense[..., -2:-1, :])
+        moving = step.norm(dim=-1) > 0.02                                                  # > 0.2 m/s
+        head = torch.where(moving, torch.atan2(step[..., 1], step[..., 0]),
+                           torch.as_tensor(yaw[sl], **f32)[None, :, None, None])
+        veh = torch.as_tensor(is_vehicle[sl], device=device)
+        half = torch.as_tensor(sizes[sl, 1], **f32) / 2
+        a_off = torch.where(veh, torch.clamp(half - 1.0, min=0.0), torch.zeros_like(half))     # (a,)
+        a_off = a_off[:, None] * torch.tensor([-1.0, 0.0, 1.0], **f32)                         # (a, 3)
+        ad = torch.stack([torch.cos(head), torch.sin(head)], -1)                             # (P, a, K, 61, 2)
+        ag_c = dense[..., None, :] + a_off[None, :, None, None, :, None] * ad[..., None, :]  # (P, a, K, 61, 3, 2)
+        r = torch.where(veh, 1.0, 0.5).to(torch.float32) + 1.0                               # ego r = 1 m
+        d = (ego_c[:, None, None, :, :, None, :] - ag_c[..., None, :, :]).norm(dim=-1)       # (P, a, K, 61, 3, 3)
+        hit = d.amin(dim=(-1, -2)) < r[None, :, None, None]                                  # (P, a, K, 61)
+        any_hit = hit.any(-1)
+        t_first = torch.where(any_hit, times[hit.float().argmax(-1)], torch.full_like(any_hit, 1e9, dtype=torch.float32))
+        pr = torch.as_tensor(probs[:, sl], **f32)
+        contrib = pr * torch.where(any_hit, 1.0 / (1.0 + t_first), torch.zeros_like(t_first))
+        risk += contrib.sum((1, 2))
+        early += (contrib * (t_first <= VETO["horizon_s"])).sum((1, 2))
+    return risk.cpu().numpy(), early.cpu().numpy()
 
 
-def densify(paths, current):
-    """(P, A, K, 12, 2) at 0.5 s steps + current (A, 2) -> (P, A, K, 61, 2) at 0.1 s, and headings."""
-    full = np.concatenate([np.broadcast_to(current[None, :, None, None], paths.shape[:3] + (1, 2)), paths], axis=3)
-    t_in = np.concatenate([[0.0], STEP_TIMES])
-    idx = np.clip(np.searchsorted(t_in, DENSE_TIMES, side="right") - 1, 0, len(t_in) - 2)
-    w = ((DENSE_TIMES - t_in[idx]) / 0.5)[:, None]
-    dense = full[..., idx, :] * (1 - w) + full[..., idx + 1, :] * w
-    d = np.diff(dense, axis=3, append=dense[..., -1:, :] + (dense[..., -1:, :] - dense[..., -2:-1, :]))
-    return dense, np.arctan2(d[..., 1], d[..., 0])
-
-
-def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weights=WEIGHTS):
+def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weights=WEIGHTS, device="cpu"):
     """Cost terms per plan; dense_plans (P, 61, 4) world (x, y, yaw, v) from generate_plans."""
     P = len(dense_plans)
-    _, states = agent_states(scene)
     by_id = dict(zip(*agent_states(scene)))
     ex, ey, eyaw = scene.ego[:3]
     c, s = np.cos(eyaw), np.sin(eyaw)
     keep = []
-    for a, i in enumerate(ids):
+    for i in ids:
         x, y, yaw = by_id[i][:3]
         xr, yr = c * (x - ex) + s * (y - ey), -s * (x - ex) + c * (y - ey)
         same_dir = np.cos(yaw - eyaw) > np.cos(np.radians(30))
         keep.append(not (xr < -1.0 and abs(yr) < 1.5 and same_dir))          # behind in the same lane -> ignore
     keep = np.asarray(keep, bool)
-
-    risk = np.zeros(P)
-    if len(ids) and keep.any():
-        current = np.array([by_id[i][:2] for i in ids])
-        dense, heading = densify(paths, current)                            # (P, A, K, 61, 2)
-        ego_c, ego_r = footprint(dense_plans[:, :, :2], dense_plans[:, :, 2], ego_size[1], ego_size[0], True)
-        for a in np.flatnonzero(keep):
-            x, y, yaw, v, w_, l_, cat = by_id[ids[a]]
-            veh = cat.startswith(VEHICLE_TYPES) or cat in ("VEHICLE", "CYCLIST")
-            ag_c, ag_r = footprint(dense[:, a], heading[:, a], l_, w_, veh)  # (P, K, 61, C, 2)
-            dist = np.linalg.norm(ego_c[:, None, :, :, None, :] - ag_c[:, :, :, None, :, :], axis=-1)
-            hit = (dist.min(axis=(-1, -2)) < ego_r + ag_r)                  # (P, K, 61)
-            first = np.where(hit.any(-1), hit.argmax(-1) * DT, np.inf)
-            risk += (probs[:, a] * np.where(np.isfinite(first), 1.0 / (1.0 + first), 0.0)).sum(-1)
+    risk, early = np.zeros(P), np.zeros(P)
+    if keep.any():
+        kid = [i for i, k_ in zip(ids, keep) if k_]
+        st = [by_id[i] for i in kid]
+        risk, early = collision_risk(
+            dense_plans, paths[:, keep], probs[:, keep], np.array([q[:2] for q in st]), np.array([q[2] for q in st]),
+            np.array([q[4:6] for q in st]), np.array([q[6].startswith(VEHICLE_TYPES) or q[6] in ("VEHICLE", "CYCLIST")
+                                                      for q in st]), ego_size, device)
 
     s_now = min(ref.project(np.array(scene.ego[:2]))[0], ref.length)
     s_end = np.array([ref.project(p[-1, :2])[0] for p in dense_plans])
@@ -197,7 +224,13 @@ def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weigh
     offset2 = np.array([m[1] for m in meta]) ** 2
     total = weights["col"] * risk - weights["progress"] * progress + weights["comfort"] * comfort + \
         weights["offset"] * offset2
-    return total, dict(risk=risk, progress=progress, comfort=comfort, offset2=offset2)
+    vetoed = early > VETO["risk"]
+    if vetoed.all():                                  # nothing is allowed: take the least risky in the first 2 s
+        total = np.where(early == early.min(), total, np.inf)
+    else:
+        total = np.where(vetoed, np.inf, total)
+    return total, dict(risk=risk, early_risk=early, progress=progress, comfort=comfort, offset2=offset2,
+                       vetoed=vetoed.astype(float))
 
 
 def box(x, y, yaw, length, width):
@@ -231,7 +264,7 @@ AGENT_PREFIXES = ("vehicle.", "human.pedestrian")
 
 
 def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
-              nearby_radius=30.0):
+              nearby_radius=30.0, device="cuda"):
     """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
 
     shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
@@ -246,7 +279,7 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     buffer.push(snapshot_from_env(env))
     steps = scenario["length"] - 1
     poses, speeds, offroad, md_crash, frames, chosen_log, hits, t_plan = [], [], 0, 0, [], [], {}, []
-    pred_log, coverage, viz_frames = [], [], []
+    pred_log, coverage, viz_frames, t_parts = [], [], [], []
     plan, plan_t = None, 0.0
     wm = predictor if getattr(predictor, "name", "") == "WM" else shadow
     for step in range(steps):
@@ -260,12 +293,15 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
                 scene = Scene(buffer, features, (x, y, yaw, v), step)
                 sparse, dense, meta = generate_plans(ref, (x, y, yaw, v))
                 paths, probs, ids = predictor.predict(scene, sparse)
-                total, terms = plan_costs(scene, ref, dense, meta, paths, probs, ids, ego_size, weights)
+                t_pred = time.perf_counter()
+                total, terms = plan_costs(scene, ref, dense, meta, paths, probs, ids, ego_size, weights, device)
                 k = int(np.argmin(total))
                 plan, plan_t = dense[k], 0.0
                 t_plan.append(1000 * (time.perf_counter() - t0))
+                t_parts.append(dict(predict=t_pred - t0, cost=time.perf_counter() - t_pred))
                 entry = dict(t=step / 10, speed=meta[k][0], offset=meta[k][1], total=float(total[k]),
-                             **{n: float(t_[k]) for n, t_ in terms.items()})
+                             n_vetoed=int(terms["vetoed"].sum()),
+                             **{n: float(t_[k]) for n, t_ in terms.items() if n != "vetoed"})
                 chosen_log.append(entry)
                 # WM predictions for the chosen plan (own, or shadow during a CV run) + coverage of nearby agents
                 if wm is not None:
@@ -322,6 +358,8 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         max_acc=float(np.abs(acc).max()), max_jerk=float(np.abs(jerk).max()),
         plan_ms=float(np.median(t_plan)) if t_plan else 0.0,
         plan_ms_p95=float(np.percentile(t_plan, 95)) if t_plan else 0.0,
+        predict_ms=float(1000 * np.median([q["predict"] for q in t_parts])) if t_parts else 0.0,
+        cost_ms=float(1000 * np.median([q["cost"] for q in t_parts])) if t_parts else 0.0,
         nearby_agents=int(sum(c[0] for c in coverage)), nearby_wm=int(sum(c[1] for c in coverage)))
     if gif is not None and frames:
         save_gif(frames, gif, 100)
