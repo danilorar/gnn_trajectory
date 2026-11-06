@@ -22,6 +22,7 @@ v2 = scene transformer (branch v2-transformer). See docs/CODE_GUIDE.md for file-
   the planner development set; cost weights are tuned only there and then frozen.
 
 ## Rules
+- All training runs are listed in docs/EXPERIMENTS.md; add a row for every new run.
 - Never commit or upload nuScenes data, images or processed samples (data/ is git-ignored).
 - Ask before: deleting files, downloads > 5 GB, anything that costs money (pods, APIs).
 - Launch every training run with `systemd-inhibit` (the laptop must not sleep mid-run).
