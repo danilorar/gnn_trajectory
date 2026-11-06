@@ -97,20 +97,20 @@ class WorldModelPredictor:
     def predict(self, scene, plans):
         import torch
         from sim.adapter import build_sample, to_model_inputs
-        from utils.lane_tokens import poses_to_local  # noqa: F401  (frame helpers live in the adapter)
+        from utils.lane_tokens import poses_to_local as to_local
         paths, probs, ids = self.cv.predict(scene, plans)
+        self.last_wm_ids = set()                                            # ids the model predicted this call
         ids_cv, states = agent_states(scene)
         cands = [(np.hypot(s[0] - scene.ego[0], s[1] - scene.ego[1]), i) for i, s in zip(ids_cv, states)
                  if s[6].startswith(VEHICLE_TYPES)]
         if not cands:
-            return paths, probs, ids
+            return np.repeat(paths, 6, axis=2), np.repeat(probs, 6, axis=2) / 6, ids
         target = min(cands)[1]
         sample = build_sample(scene.buffer, scene.map_features, target, ego_plan=plans[0])
         item = to_model_inputs(sample)
         P = len(plans)
         batch = {k: v[None].expand(P, *v.shape).contiguous().to(self.device) for k, v in item.items()}
         tx, ty, tyaw = scene.buffer.now()[target][:3]
-        from utils.lane_tokens import poses_to_local as to_local
         batch["ego_future"] = torch.as_tensor(np.stack([to_local(p, np.array([tx, ty]), tyaw) for p in plans]),
                                               dtype=torch.float32, device=self.device)
         with torch.no_grad():
@@ -132,6 +132,7 @@ class WorldModelPredictor:
             if oid in index and item["agent_mask"][slot]:
                 out_paths[:, index[oid]] = world[:, m_]
                 out_probs[:, index[oid]] = pr[:, m_]
+                self.last_wm_ids.add(oid)
         return out_paths, out_probs, ids
 
 
@@ -226,17 +227,28 @@ def collisions(ego_pose, ego_size, snapshot):
     return out
 
 
-def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5):
-    """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log."""
+AGENT_PREFIXES = ("vehicle.", "human.pedestrian")
+
+
+def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
+              nearby_radius=30.0):
+    """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
+
+    shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
+    viz: GIF path for the fixed-camera planning view (one frame per planning step)."""
     import time
+    from sim.adapter import add_connector_polygons
     scenario = env.engine.data_manager.current_scenario
+    features = add_connector_polygons(scenario["map_features"], scenario["metadata"]["map"])
     ref = reference_from_scenario(scenario)
     ego_size = (float(env.agent.WIDTH), float(env.agent.LENGTH))
     buffer, tracker = HistoryBuffer(), Tracker()
     buffer.push(snapshot_from_env(env))
     steps = scenario["length"] - 1
     poses, speeds, offroad, md_crash, frames, chosen_log, hits, t_plan = [], [], 0, 0, [], [], {}, []
+    pred_log, coverage, viz_frames = [], [], []
     plan, plan_t = None, 0.0
+    wm = predictor if getattr(predictor, "name", "") == "WM" else shadow
     for step in range(steps):
         a = env.agent
         x, y, yaw, v = float(a.position[0]), float(a.position[1]), float(a.heading_theta), float(a.speed)
@@ -245,15 +257,32 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         else:
             if step % replan_steps == 0:
                 t0 = time.perf_counter()
-                scene = Scene(buffer, env.engine.data_manager.current_scenario["map_features"], (x, y, yaw, v), step)
+                scene = Scene(buffer, features, (x, y, yaw, v), step)
                 sparse, dense, meta = generate_plans(ref, (x, y, yaw, v))
                 paths, probs, ids = predictor.predict(scene, sparse)
                 total, terms = plan_costs(scene, ref, dense, meta, paths, probs, ids, ego_size, weights)
                 k = int(np.argmin(total))
                 plan, plan_t = dense[k], 0.0
                 t_plan.append(1000 * (time.perf_counter() - t0))
-                chosen_log.append(dict(t=step / 10, speed=meta[k][0], offset=meta[k][1], total=float(total[k]),
-                                       **{n: float(t_[k]) for n, t_ in terms.items()}))
+                entry = dict(t=step / 10, speed=meta[k][0], offset=meta[k][1], total=float(total[k]),
+                             **{n: float(t_[k]) for n, t_ in terms.items()})
+                chosen_log.append(entry)
+                # WM predictions for the chosen plan (own, or shadow during a CV run) + coverage of nearby agents
+                if wm is not None:
+                    if wm is predictor:
+                        w_paths, w_probs, w_ids = paths[k], probs[k], ids
+                    else:
+                        wp, wpr, w_ids = wm.predict(scene, sparse[k:k + 1])
+                        w_paths, w_probs = wp[0], wpr[0]
+                    now = buffer.now()
+                    near = [i for i in w_ids if now[i][5].startswith(AGENT_PREFIXES)
+                            and np.hypot(now[i][0] - x, now[i][1] - y) <= nearby_radius]
+                    coverage.append((len(near), sum(i in wm.last_wm_ids for i in near)))
+                    pred_log.append(dict(step=step, ids=list(w_ids), paths=w_paths, probs=w_probs,
+                                         wm_ids=set(wm.last_wm_ids), plan=dense[k].copy()))
+                if viz is not None:
+                    viz_frames.append(render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry,
+                                                            predictor.name, features))
             act = tracker.action(x, y, yaw, v, plan, plan_t)
         _, _, _, _, info = env.step(act)
         plan_t += DT
@@ -278,17 +307,114 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     v2 = np.linalg.norm(np.diff(p2, axis=0), axis=1) / 0.5
     acc = np.diff(v2) / 0.5 if len(v2) > 1 else np.zeros(1)
     jerk = np.diff(acc) / 0.5 if len(acc) > 1 else np.zeros(1)
+    collided = []
+    for oid, (cat, fault, t) in hits.items():
+        c = dict(object=oid[:8], category=cat, at_fault=fault, t=t / 10)
+        if fault and pred_log:
+            c.update(wm_prediction_before(pred_log, oid, t, scenario, ego_size))
+        collided.append(c)
     metrics = dict(
         scene=scenario["metadata"]["scenario_id"], steps=steps,
         at_fault=sum(f for _, f, _ in hits.values()), not_at_fault=sum(not f for _, f, _ in hits.values()),
-        collided=[(oid[:8], cat, fault, t / 10) for oid, (cat, fault, t) in hits.items()],
-        metadrive_crash_steps=md_crash, offroad_steps=offroad,
-        progress_ratio=float(min(s_end, ref.length) / ref.length) if ref.length >= 1.0 else float("nan"),  # n/a: log never moves
-        overshoot_m=float(max(s_end - ref.length, 0.0)),
-        driven_m=float(s_end), logged_m=float(ref.length), max_acc=float(np.abs(acc).max()), max_jerk=float(np.abs(jerk).max()),
-        plan_ms=float(np.median(t_plan)) if t_plan else 0.0)
+        collided=collided, metadrive_crash_steps=md_crash, offroad_steps=offroad,
+        progress_ratio=float(min(s_end, ref.length) / ref.length) if ref.length >= 1.0 else float("nan"),
+        overshoot_m=float(max(s_end - ref.length, 0.0)), driven_m=float(s_end), logged_m=float(ref.length),
+        max_acc=float(np.abs(acc).max()), max_jerk=float(np.abs(jerk).max()),
+        plan_ms=float(np.median(t_plan)) if t_plan else 0.0,
+        plan_ms_p95=float(np.percentile(t_plan, 95)) if t_plan else 0.0,
+        nearby_agents=int(sum(c[0] for c in coverage)), nearby_wm=int(sum(c[1] for c in coverage)))
     if gif is not None and frames:
-        from PIL import Image
-        imgs = [Image.fromarray(f) for f in frames]
-        imgs[0].save(gif, save_all=True, append_images=imgs[1:], duration=100, loop=0)
+        save_gif(frames, gif, 100)
+    if viz is not None and viz_frames:
+        save_gif(viz_frames, viz, 400)
     return metrics, chosen_log
+
+
+def save_gif(frames, path, ms):
+    from PIL import Image
+    imgs = [Image.fromarray(f) for f in frames]
+    imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=ms, loop=0)
+
+
+def wm_prediction_before(pred_log, oid, hit_step, scenario, ego_size):
+    """What the WM predicted for object oid at the last planning step before the collision."""
+    before = [p for p in pred_log if p["step"] < hit_step]
+    if not before:
+        return {}
+    p = before[-1]
+    dt = (hit_step - p["step"]) / 10
+    out = dict(wm_pred_t=p["step"] / 10, wm_covered=oid in p["wm_ids"], wm_horizon_s=dt)
+    if oid not in p["ids"]:
+        return {**out, "wm_note": "not within 60 m at that step"}
+    a = p["ids"].index(oid)
+    paths, probs = p["paths"][a], p["probs"][a]                            # (K, 12, 2), (K,)
+    st = scenario["tracks"][oid]["state"]
+    actual = np.asarray(st["position"])[hit_step, :2]
+    t_in = np.concatenate([[0.0], STEP_TIMES])
+    cur = np.asarray(st["position"])[p["step"], :2]
+    full = np.concatenate([np.broadcast_to(cur, (len(paths), 1, 2)), paths], 1)
+    at_t = np.stack([np.interp(dt, t_in, full[k, :, 0]) for k in range(len(paths))]), \
+        np.stack([np.interp(dt, t_in, full[k, :, 1]) for k in range(len(paths))])
+    at_t = np.stack(at_t, -1)                                               # (K, 2)
+    err = np.linalg.norm(at_t - actual, axis=1)
+    ego = p["plan"][min(int(round(dt * 10)), len(p["plan"]) - 1), :2]
+    top = int(np.argmax(probs))
+    return {**out, "wm_top_prob": float(probs[top]), "wm_err_top_m": float(err[top]),
+            "wm_err_best_m": float(err.min()), "wm_prob_best": float(probs[int(err.argmin())]),
+            "wm_pred_dist_to_ego_plan_m": float(np.linalg.norm(at_t[top] - ego)),
+            "wm_actual_dist_to_ego_plan_m": float(np.linalg.norm(actual - ego))}
+
+
+def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, features, radius=40.0):
+    """Fixed camera on the scene's route; lanes, reference route (grey), 35 plans (thin), chosen plan (thick
+    green), current agents, predicted futures of nearby agents (opacity = prob), text box with the cost terms."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    route = ref.xy[ref.s <= max(ref.length, 1.0)]
+    lo, hi = route.min(0) - 30, route.max(0) + 30
+    span = (hi - lo).max()
+    mid = (lo + hi) / 2
+    lo, hi = mid - span / 2, mid + span / 2
+    fig, ax = plt.subplots(figsize=(7, 7), dpi=90)
+    for f in features.values():
+        if f["type"].startswith("LANE_SURFACE"):
+            pl = np.asarray(f["polyline"])[:, :2]
+            if ((pl > lo) & (pl < hi)).all(1).any():
+                ax.plot(pl[:, 0], pl[:, 1], color="0.88", lw=0.6, zorder=1)
+    ax.plot(route[:, 0], route[:, 1], color="0.55", lw=6, alpha=0.45, solid_capstyle="round", zorder=2)
+    for j in range(len(dense)):
+        ax.plot(dense[j, :, 0], dense[j, :, 1], color="tab:blue", lw=0.5, alpha=0.35, zorder=3)
+    ax.plot(dense[k, :, 0], dense[k, :, 1], color="tab:green", lw=3.5, zorder=6)
+    now = scene.buffer.now()
+    ex, ey = scene.ego[:2]
+    for a, i in enumerate(ids):
+        x, y, yaw, w_, l_, cat = now[i]
+        veh = cat.startswith("vehicle.")
+        color = "tab:red" if veh else ("tab:orange" if cat.startswith("human") else "0.5")
+        b = box(x, y, yaw, max(l_, 0.5), max(w_, 0.5))
+        ax.fill(*b.exterior.xy, color=color, alpha=0.8 if veh else 0.6, lw=0, zorder=5)
+        if np.hypot(x - ex, y - ey) <= radius and cat.startswith(AGENT_PREFIXES):
+            for m_ in range(paths.shape[2]):
+                pr = float(probs[k, a, m_])
+                if pr > 0.02:
+                    pth = np.vstack([[x, y], paths[k, a, m_]])
+                    ax.plot(pth[:, 0], pth[:, 1], color=color, lw=1.4, alpha=min(1.0, 0.1 + pr), zorder=4)
+    eb = box(ex, ey, scene.ego[2], 4.5, 1.85)
+    ax.fill(*eb.exterior.xy, color="tab:green", zorder=7)
+    txt = (f"{name} planner   t = {entry['t']:.1f} s   ego {scene.ego[3]:.1f} m/s\n"
+           f"chosen: speed {entry['speed']:.0f} m/s, offset {entry['offset']:+.2f} m\n"
+           f"risk {entry['risk']:.2f}  progress {entry['progress']:.1f} m  comfort {entry['comfort']:.1f}  "
+           f"offset² {entry['offset2']:.2f}\ntotal {entry['total']:.1f}")
+    ax.text(0.02, 0.98, txt, transform=ax.transAxes, va="top", ha="left", fontsize=8, family="monospace",
+            bbox=dict(facecolor="white", alpha=0.85, edgecolor="0.7"), zorder=10)
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    fig.tight_layout()
+    fig.canvas.draw()
+    img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+    plt.close(fig)
+    return img
