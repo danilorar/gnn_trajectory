@@ -167,6 +167,10 @@ def run_v2(args, seed, device, checkpoint):
 
     def loader(split, shuffle):
         ds = TrajectoryDatasetV2(PROJECT_ROOT / f"data/processed_v2/nuscenes_{split}_prediction_samples_map.pkl")
+        if split == "train" and args.train_fraction < 1.0:
+            # Fixed permutation (seed 0, independent of --seed): the 25% subset is part of the 50% subset
+            order = np.random.default_rng(0).permutation(len(ds))
+            ds = torch.utils.data.Subset(ds, np.sort(order[: int(round(args.train_fraction * len(ds)))]).tolist())
         print(f"{split}: {len(ds)} samples", flush=True)
         return TorchLoader(ds, batch_size=args.batch_size, shuffle=shuffle, num_workers=4, pin_memory=True,
                            persistent_workers=True,
@@ -252,6 +256,7 @@ def run_v2(args, seed, device, checkpoint):
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
             predict_agents=args.predict_agents, ego_plan=args.ego_plan, plan_drop=0.5 if args.ego_plan else None,
             soft_scores=args.soft_scores, target_split=args.target_split, patience_start=args.patience_start,
+            train_fraction=args.train_fraction,
             model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             patience=args.patience, stopped_epoch=stopped_epoch, epochs_trained=len(val_metrics),
@@ -288,6 +293,8 @@ def main():
     )
     parser.add_argument("--patience", type=int, default=10,
                         help="v2 only: early stopping patience on val minADE6 in epochs (0 = off)")
+    parser.add_argument("--train-fraction", type=float, default=1.0,
+                        help="v2 only: train on this fraction of the train split (nested random subsets, seed 0)")
     parser.add_argument("--patience-start", type=int, default=0,
                         help="v2 only: no early stopping before this epoch")
     parser.add_argument("--target-split", action="store_true",
