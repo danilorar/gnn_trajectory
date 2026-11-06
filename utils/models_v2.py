@@ -286,11 +286,15 @@ def v2_loss(traj, logits, target, target_valid, anchors, score_weight=1.0, assig
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
 
 
-def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1.0, soft_scores=False):
-    """Predicted winner-takes-all per agent (as v2_loss with assign="predicted"), averaged over agents.
+def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1.0, soft_scores=False,
+                     target_split=False):
+    """Predicted winner-takes-all per agent (as v2_loss with assign="predicted").
 
+    target_split=False: averaged over all included agents (the target is one of ~12 per sample).
+    target_split=True:  target loss (mean over samples) + mean loss of the other included agents,
+                        so the target keeps the same weight as in the target-only model.
     traj (B, M, K, F, 2), logits (B, M, K), future (B, M, F, 2), future_valid (B, M, F),
-    include (B, M) bool: agents that enter the loss."""
+    include (B, M) bool: agents that enter the loss; index 0 = target."""
     B, M, K = logits.shape
     valid = future_valid.float()
     n_valid = valid.sum(-1).clamp(min=1)                                                # (B, M)
@@ -304,9 +308,19 @@ def multi_agent_loss(traj, logits, future, future_valid, include, score_weight=1
         cls = soft_score_ce(logits, ade)                                                # (B, M)
     else:
         cls = F.cross_entropy(logits.reshape(-1, K), k_star.reshape(-1), reduction="none").view(B, M)
+    def masked_mean(x, w):
+        return (x * w).sum() / w.sum().clamp(min=1)
+
     w = include.float()
-    n = w.sum().clamp(min=1)
-    reg, cls = (reg * w).sum() / n, (cls * w).sum() / n
+    if target_split:
+        wt, wo = w.clone(), w.clone()
+        wt[:, 1:], wo[:, 0] = 0, 0
+        reg_t, cls_t = masked_mean(reg, wt), masked_mean(cls, wt)
+        reg_o, cls_o = masked_mean(reg, wo), masked_mean(cls, wo)
+        loss = reg_t + score_weight * cls_t + reg_o + score_weight * cls_o
+        return loss, {"reg": (reg_t + reg_o).item(), "cls": (cls_t + cls_o).item(),
+                      "reg_target": reg_t.item(), "reg_others": reg_o.item()}
+    reg, cls = masked_mean(reg, w), masked_mean(cls, w)
     return reg + score_weight * cls, {"reg": reg.item(), "cls": cls.item()}
 
 
@@ -329,13 +343,14 @@ class V2Predictor(nn.Module):
     ego_plan=True (block 2): the ego's planned future becomes one extra scene token at the ego's current pose.
     In training it is dropped (padded) for each sample with probability plan_drop, so the model also works
     without a plan; forward(batch, plan=True/False) forces it on/off (default: on in eval).
-    soft_scores=True (block 3): score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner."""
+    soft_scores=True (block 3): score loss against softmax(-ADE_k / 1 m) instead of the one-hot winner.
+    target_split=True: multi-agent loss = target loss + mean of the other agents' losses."""
 
     MIN_FUTURE_STEPS = 6  # agents with fewer valid future steps are left out of the loss and the metrics
 
     def __init__(self, anchors, d_model=128, heads=8, encoder_layers=3, decoder_layers=2, dropout=0.1,
                  assign="predicted", topology=False, scale_inputs=False, predict_agents=1,
-                 ego_plan=False, plan_drop=0.5, soft_scores=False):
+                 ego_plan=False, plan_drop=0.5, soft_scores=False, target_split=False):
         super().__init__()
         if predict_agents > 1 and assign != "predicted":
             raise ValueError("multi-agent prediction supports assign='predicted' only")
@@ -345,6 +360,7 @@ class V2Predictor(nn.Module):
         self.ego_plan = ego_plan
         self.plan_drop = plan_drop
         self.soft_scores = soft_scores
+        self.target_split = target_split
         self.slots = [0] + list(range(2, predict_agents + 1)) if predict_agents > 1 else [0]
         pos_scale = 50.0 if scale_inputs else 1.0
         self.agent_encoder = AgentEncoder(d_model, pos_scale=pos_scale)
@@ -392,4 +408,5 @@ class V2Predictor(nn.Module):
         if self.predict_agents == 1:
             return v2_loss(traj, logits, batch["target_future"], batch["target_future_valid"],
                            self.decoder.anchors, assign=self.assign, soft_scores=self.soft_scores)
-        return multi_agent_loss(traj, logits, *self.agent_targets(batch), soft_scores=self.soft_scores)
+        return multi_agent_loss(traj, logits, *self.agent_targets(batch), soft_scores=self.soft_scores,
+                                target_split=self.target_split)

@@ -69,6 +69,18 @@ def moving_agents(batch, slots, threshold=1.0):
     return torch.maximum(d_hist, d_fut) > threshold
 
 
+def near_ego_agents(batch, slots, radius=10.0):
+    """(B, M) bool: at some future step t where both are valid, the agent's true position is within radius m
+    of the ego's true position at the same t. These are the agents an ego plan should matter for."""
+    fut, fv = batch["agent_future"][:, slots], batch["agent_future_valid"][:, slots]       # (B, M, F, 2)
+    ego, ev = batch["ego_future"][:, None, :, :2], batch["ego_future_valid"][:, None]      # (B, 1, F, 2)
+    d = (fut - ego).norm(dim=-1).masked_fill(~(fv & ev), float("inf"))                      # (B, M, F)
+    return d.amin(-1) <= radius
+
+
+AGENT_GROUPS = ("all_agents", "moving_agents", "near_ego_agents")
+
+
 def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
     """Val/test metrics of a v2 model as a dict.
 
@@ -76,7 +88,8 @@ def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
     top1_ADE / top1_FDE of the highest-score mode, mode_wins (share each mode is the lowest-ADE one).
     Multi-agent models add the same over all predicted agents with >= 6 valid future steps (all_agents_*)
     and over the moving ones only (moving_agents_*, > 1 m from the current position in history or future):
-    ADE over valid steps, FDE at the last valid step. plan: forwarded to the model (ego-plan on/off)."""
+    ADE over valid steps, FDE at the last valid step. With an ego-plan model also near_ego_agents_* (predicted
+    agents within 10 m of the ego at the same future step). plan: forwarded to the model (on/off)."""
     model.eval()
     sums, wins = {}, None
 
@@ -93,7 +106,10 @@ def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
                 a_ade, a_fde = agent_min_errors(traj, future, valid)
                 top = logits.argmax(-1)[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:])
                 t_ade, t_fde = agent_min_errors(traj.gather(2, top), future, valid)   # 1 mode -> top-1 errors
-                for name, mask in (("all_agents", include), ("moving_agents", moving)):
+                groups = [("all_agents", include), ("moving_agents", moving)]
+                if model.ego_plan:
+                    groups.append(("near_ego_agents", include & near_ego_agents(batch, model.slots)))
+                for name, mask in groups:
                     add(f"{name}_n", mask)
                     for metric, values in (("minADE6", a_ade), ("minFDE6", a_fde),
                                            ("top1_ADE", t_ade), ("top1_FDE", t_fde)):
@@ -117,8 +133,8 @@ def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
         if key.endswith("_n"):
             continue
         group = key.split("_minADE6")[0].split("_minFDE6")[0].split("_top1")[0]
-        out[key] = value / (sums[f"{group}_n"] if group in ("all_agents", "moving_agents") else n)
-    for group in ("all_agents", "moving_agents"):
+        out[key] = value / (sums[f"{group}_n"] if group in AGENT_GROUPS else n)
+    for group in AGENT_GROUPS:
         if f"{group}_n" in sums:
             out[f"{group}_n"] = int(sums[f"{group}_n"])
     return out
@@ -133,6 +149,9 @@ def format_v2(m):
                  f"minFDE6 {m['moving_agents_minFDE6']:.3f}, top-1 ADE {m['moving_agents_top1_ADE']:.3f} / "
                  f"FDE {m['moving_agents_top1_FDE']:.3f} m | all agents ({m['all_agents_n']}): "
                  f"minADE6 {m['all_agents_minADE6']:.3f}")
+    if "near_ego_agents_n" in m:
+        line += (f" | near ego ({m['near_ego_agents_n']}, {m['near_ego_agents_n'] / m['n']:.2f}/sample): "
+                 f"minADE6 {m['near_ego_agents_minADE6']:.3f}, minFDE6 {m['near_ego_agents_minFDE6']:.3f}")
     return line
 
 
@@ -156,7 +175,7 @@ def run_v2(args, seed, device, checkpoint):
     model = V2Predictor(np.load(PROJECT_ROOT / args.anchors), assign=args.assign,
                         topology=args.topology, scale_inputs=args.scale_inputs,
                         predict_agents=args.predict_agents, ego_plan=args.ego_plan,
-                        soft_scores=args.soft_scores).to(device)
+                        soft_scores=args.soft_scores, target_split=args.target_split).to(device)
     plans = (("plan on", True), ("plan off", False)) if args.ego_plan else (("", None),)
 
     def evaluate_all(loader_):
@@ -179,6 +198,7 @@ def run_v2(args, seed, device, checkpoint):
         ], milestones=[warmup])
         print(f"Training v2 (assign={args.assign}, topology={args.topology}, scale_inputs={args.scale_inputs}, "
               f"predict_agents={args.predict_agents}, ego_plan={args.ego_plan}, soft_scores={args.soft_scores}, "
+              f"target_split={args.target_split}, "
               f"anchors={args.anchors}) | {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params | "
               f"seed={seed} | device={device}", flush=True)
 
@@ -213,7 +233,8 @@ def run_v2(args, seed, device, checkpoint):
                   + ("  <- DEAD MODE (<3%)" if min(wins) < 0.03 else ""), flush=True)
 
             # Early stopping on val minADE6; the cosine schedule stays defined over all args.epochs
-            if args.patience and epoch - best_epoch >= args.patience and epoch < args.epochs:
+            if (args.patience and epoch - best_epoch >= args.patience and epoch < args.epochs
+                    and epoch >= args.patience_start):
                 stopped_epoch = epoch
                 print(f"Early stopping at epoch {epoch}: no val minADE6 improvement for {args.patience} epochs "
                       f"(best epoch {best_epoch}, {min(val_metrics):.3f} m)", flush=True)
@@ -230,7 +251,7 @@ def run_v2(args, seed, device, checkpoint):
         save_run_manifest(
             checkpoint, model="v2", assign=args.assign, topology=args.topology, scale_inputs=args.scale_inputs,
             predict_agents=args.predict_agents, ego_plan=args.ego_plan, plan_drop=0.5 if args.ego_plan else None,
-            soft_scores=args.soft_scores,
+            soft_scores=args.soft_scores, target_split=args.target_split, patience_start=args.patience_start,
             model_class=type(model).__name__, seed=seed, num_modes=6,
             num_epochs=args.epochs, best_epoch=int(np.argmin(val_metrics)) + 1, batch_size=args.batch_size,
             patience=args.patience, stopped_epoch=stopped_epoch, epochs_trained=len(val_metrics),
@@ -267,6 +288,10 @@ def main():
     )
     parser.add_argument("--patience", type=int, default=10,
                         help="v2 only: early stopping patience on val minADE6 in epochs (0 = off)")
+    parser.add_argument("--patience-start", type=int, default=0,
+                        help="v2 only: no early stopping before this epoch")
+    parser.add_argument("--target-split", action="store_true",
+                        help="v2 multi-agent only: loss = target loss + mean of the other agents' losses")
     parser.add_argument("--anchors", default="assets/anchors.npy",
                         help="v2 only: anchor file (K, 2), relative to the project root")
     parser.add_argument("--predict-agents", type=int, default=1,
