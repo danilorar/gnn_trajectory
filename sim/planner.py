@@ -23,7 +23,10 @@ class ReferencePath:
 
     def __init__(self, points, spacing=1.0, extend=100.0, heading=None):
         pts = np.asarray(points, float)[:, :2]
-        keep = np.concatenate([[True], np.linalg.norm(np.diff(pts, axis=0), axis=1) > 1e-3])
+        keep = [0]                                    # drop points < 5 cm from the last kept one (standstill jitter)
+        for i in range(1, len(pts)):
+            if np.linalg.norm(pts[i] - pts[keep[-1]]) > 0.05:
+                keep.append(i)
         pts = pts[keep]
         if len(pts) < 2:                    # the logged ego never moves: a straight line along its heading
             h = 0.0 if heading is None else heading
@@ -31,7 +34,10 @@ class ReferencePath:
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         s = np.concatenate([[0.0], np.cumsum(seg)])
         self.length = float(s[-1])
-        d_end = (pts[-1] - pts[-2]) / seg[-1]
+        # direction of the straight extension: over the last ~3 m of the route, not its last (possibly tiny) segment
+        back = np.searchsorted(s, s[-1] - 3.0, side="right") - 1
+        d_end = pts[-1] - pts[max(0, min(back, len(pts) - 2))]
+        d_end = d_end / max(np.linalg.norm(d_end), 1e-9)
         grid = np.arange(0.0, s[-1] + extend, spacing)
         inside = grid <= s[-1]
         xy = np.empty((len(grid), 2))

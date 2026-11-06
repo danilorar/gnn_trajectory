@@ -353,7 +353,7 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
             c.update(wm_prediction_before(pred_log, oid, t, scenario, ego_size))
         collided.append(c)
     metrics = dict(
-        scene=scenario["metadata"]["scenario_id"], steps=steps,
+        scene=scenario["metadata"]["scenario_id"], map=scenario["metadata"].get("map", ""), steps=steps,
         at_fault=sum(f for _, f, _ in hits.values()), not_at_fault=sum(not f for _, f, _ in hits.values()),
         collided=collided, metadrive_crash_steps=md_crash, offroad_steps=offroad,
         progress_ratio=float(min(s_end, ref.length) / ref.length) if ref.length >= 1.0 else float("nan"),

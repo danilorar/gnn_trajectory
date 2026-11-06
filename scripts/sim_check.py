@@ -478,7 +478,7 @@ def follow(index, replan_steps=5):
         env.close()
 
 
-def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json):
+def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json, data_dir=None, quiet=False):
     """Closed-loop planners (CV and/or WM) on the converted mini scenes + the logged ego ("expert").
     During CV runs the WM runs in shadow mode (chosen plan only) so every at-fault collision can be compared
     with what the WM would have predicted."""
@@ -491,15 +491,17 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     from metadrive.scenario.utils import get_number_of_scenarios
     from sim.closed_loop import WEIGHTS, CVPredictor, WorldModelPredictor, run_scene
 
-    n = get_number_of_scenarios(str(SCENARIO_DIR))
+    data_dir = Path(data_dir or SCENARIO_DIR)
+    n = get_number_of_scenarios(str(data_dir))
     scene_indices = scene_indices or list(range(n))
     wm = WorldModelPredictor(checkpoint) if ("wm" in predictor_names or "cv" in predictor_names) else None
     runs = [(("CV" if p_ == "cv" else "WM") + " planner", CVPredictor() if p_ == "cv" else wm,
              wm if p_ == "cv" else None, {}, False) for p_ in predictor_names]
     runs.append(("expert (log)", None, None, dict(agent_policy=ReplayEgoCarPolicy), True))
-    base = dict(use_render=False, num_scenarios=n, data_directory=str(SCENARIO_DIR), horizon=10_000, log_level=50,
+    base = dict(use_render=False, num_scenarios=n, data_directory=str(data_dir), horizon=10_000, log_level=50,
                 crash_vehicle_done=False, crash_object_done=False, crash_human_done=False)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = out_json.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     results = {}
     for label, predictor, shadow, cfg, expert in runs:
         env = ScenarioEnv({**base, **cfg})
@@ -508,10 +510,10 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
         try:
             for i in scene_indices:
                 env.reset(seed=i)
-                gif = OUT_DIR / f"plan_{tag}_scene{i}.gif" if (i in gif_indices and not expert) else None
-                viz = OUT_DIR / f"planview_{tag}_scene{i}.gif" if (i in viz_indices and not expert) else None
+                gif = out_dir / f"plan_{tag}_scene{i}.gif" if (i in gif_indices and not expert) else None
+                viz = out_dir / f"planview_{tag}_scene{i}.gif" if (i in viz_indices and not expert) else None
                 m, chosen = run_scene(env, predictor, gif=gif, expert=expert, shadow=shadow, viz=viz)
-                m["chosen_plans"] = chosen
+                m["chosen_plans"], m["index"] = chosen, i
                 rows.append(m)
                 print(f"  {label:14s} {m['scene']}: at-fault {m['at_fault']}, off-road steps {m['offroad_steps']}, "
                       f"progress {m['progress_ratio']:.2f}" + (f", plan {m['plan_ms']:.0f} ms" if not expert else ""),
@@ -571,6 +573,130 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
                                                                    "offset2", "total")))
     out_json.write_text(json.dumps({"weights": WEIGHTS, "results": results}, indent=1, default=str))
     print(f"saved {out_json}")
+    return results
+
+
+def evaluate_test(data_dir, checkpoint, out_dir, seed=0):
+    """Closed-loop test: CV and WM planners + the expert on every scene of data_dir (frozen weights), then
+    paired statistics, a per-map breakdown, coverage / timing, the 5 worst scenes per planner and a spot-check
+    of the collision classification (both with GIFs, from a second deterministic pass with rendering on)."""
+    import json
+    import numpy as np
+    from scipy.stats import wilcoxon
+    out_dir.mkdir(parents=True, exist_ok=True)
+    res = plan(["cv", "wm"], [], [], [], checkpoint, out_dir / "results.json", data_dir)
+    cv, wm, ex = res["CV planner"], res["WM planner"], res["expert (log)"]
+    rng = np.random.default_rng(seed)
+
+    def boot(d):
+        d = np.asarray(d, float)
+        means = rng.choice(d, (10_000, len(d)), replace=True).mean(1)
+        return float(d.mean()), float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
+
+    def wil(d):
+        d = np.asarray(d, float)
+        return float(wilcoxon(d).pvalue) if np.any(d != 0) else 1.0
+
+    lines = ["# Closed-loop test: CV vs WM planner (146 nuScenes val scenes = our test split, minus 4 dev mini scenes)",
+             "", f"Checkpoint: `{checkpoint}`; weights frozen: col 500, progress 1, comfort 0.1, offset 0.5, veto early "
+             "risk > 0.3 within 2 s. Non-reactive agents (log replay).", ""]
+    def mean_row(rows, name):
+        return (f"| {name} | {np.mean([m['at_fault'] for m in rows]):.3f} | {np.mean([m['at_fault'] > 0 for m in rows]):.1%} | "
+                f"{np.mean([m['not_at_fault'] for m in rows]):.3f} | {np.mean([m['offroad_steps'] > 0 for m in rows]):.1%} | "
+                f"{np.nanmean([m['progress_ratio'] for m in rows]):.3f} | {np.mean([m['max_acc'] for m in rows]):.2f} | "
+                f"{np.mean([m['max_jerk'] for m in rows]):.2f} |")
+    lines += ["## Means over scenes", "", "| | at-fault / scene | scenes with at-fault | rear-ended / scene | scenes off-road | "
+              "progress ratio | max \\|a\\| | max \\|jerk\\| |", "|---|---|---|---|---|---|---|---|",
+              mean_row(cv, "CV planner"), mean_row(wm, "WM planner"), mean_row(ex, "expert (log)"), ""]
+    d_af = [w["at_fault"] - c["at_fault"] for w, c in zip(wm, cv)]
+    pairs = [(w["progress_ratio"], c["progress_ratio"]) for w, c in zip(wm, cv)
+             if np.isfinite(w["progress_ratio"]) and np.isfinite(c["progress_ratio"])]
+    d_pr = [w - c for w, c in pairs]
+    d_rear = [w["not_at_fault"] - c["not_at_fault"] for w, c in zip(wm, cv)]
+    stats = {}
+    lines += ["## Paired WM - CV (same scenes)", "", "| metric | n scenes | mean WM - CV | bootstrap 95% CI | Wilcoxon p |",
+              "|---|---|---|---|---|"]
+    for name, d in (("at-fault collisions / scene", d_af), ("progress ratio", d_pr), ("rear-ended / scene", d_rear)):
+        m_, lo, hi = boot(d)
+        stats[name] = dict(n=len(d), mean=m_, ci=[lo, hi], wilcoxon_p=wil(d))
+        lines.append(f"| {name} | {len(d)} | {m_:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {stats[name]['wilcoxon_p']:.3g} |")
+    lines += ["", "Progress ratio excludes scenes where the logged ego does not move (n/a).", ""]
+    lines += ["## Per map", "", "| map | scenes | planner | at-fault / scene | rear-ended / scene | off-road | progress |",
+              "|---|---|---|---|---|---|---|"]
+    for mp in sorted({m["map"] for m in cv}):
+        for name, rows in (("CV", cv), ("WM", wm), ("expert", ex)):
+            r = [m for m in rows if m["map"] == mp]
+            lines.append(f"| {mp} | {len(r)} | {name} | {np.mean([m['at_fault'] for m in r]):.3f} | "
+                         f"{np.mean([m['not_at_fault'] for m in r]):.3f} | {np.mean([m['offroad_steps'] > 0 for m in r]):.1%} | "
+                         f"{np.nanmean([m['progress_ratio'] for m in r]):.3f} |")
+    cov = {n_: (sum(m["nearby_wm"] for m in r), sum(m["nearby_agents"] for m in r)) for n_, r in (("CV", cv), ("WM", wm))}
+    lines += ["", "## Coverage and timing", "",
+              f"- WM coverage (vehicles / pedestrians within 30 m, all planning steps): WM planner {cov['WM'][0]}/{cov['WM'][1]}"
+              f" = {cov['WM'][0] / max(cov['WM'][1], 1):.0%}; shadow WM during the CV runs {cov['CV'][0] / max(cov['CV'][1], 1):.0%}",
+              f"- Median planning time per step: CV {np.median([m['plan_ms'] for m in cv]):.0f} ms, "
+              f"WM {np.median([m['plan_ms'] for m in wm]):.0f} ms (p95 of scene medians: CV "
+              f"{np.percentile([m['plan_ms'] for m in cv], 95):.0f}, WM {np.percentile([m['plan_ms'] for m in wm], 95):.0f})", ""]
+
+    def worst(rows):
+        key = lambda m: (-m["at_fault"], -(m["offroad_steps"] > 0), np.nan_to_num(m["progress_ratio"], nan=1.0))
+        return sorted(rows, key=key)[:5]
+    worst_sel = {"cv": worst(cv), "wm": worst(wm)}
+    events = [(tag, m["index"], m["scene"], c) for tag, rows in (("cv", cv), ("wm", wm)) for m in rows for c in m["collided"]]
+    af = [e for e in events if e[3]["at_fault"]]
+    ra = [e for e in events if not e[3]["at_fault"]]
+    spot = ([af[i] for i in rng.choice(len(af), min(5, len(af)), replace=False)] if af else []) + \
+           ([ra[i] for i in rng.choice(len(ra), min(5, len(ra)), replace=False)] if ra else [])
+
+    gif_dir = out_dir / "gifs"
+    gif_dir.mkdir(exist_ok=True)
+    rerun = {}
+    for tag in ("cv", "wm"):
+        idx = sorted({m["index"] for m in worst_sel[tag]} | {e[1] for e in spot if e[0] == tag})
+        if idx:
+            r = plan([tag], idx, idx, idx, checkpoint, gif_dir / f"rerun_{tag}.json", data_dir)
+            rerun[tag] = {m["index"]: m for m in r[("CV" if tag == "cv" else "WM") + " planner"]}
+    first = {"cv": {m["index"]: m for m in cv}, "wm": {m["index"]: m for m in wm}}
+    same = all(rerun[t][i]["at_fault"] == first[t][i]["at_fault"] and rerun[t][i]["not_at_fault"] == first[t][i]["not_at_fault"]
+               for t in rerun for i in rerun[t])
+    lines += ["## 5 worst scenes per planner", "", f"Re-run with rendering for the GIFs; identical collision counts to "
+              f"the main run: {same}.", "", "| planner | scene | map | at-fault | rear-ended | off-road | progress | GIFs |",
+              "|---|---|---|---|---|---|---|---|"]
+    for tag, rows in worst_sel.items():
+        for m in rows:
+            lines.append(f"| {tag.upper()} | {m['scene']} | {m['map']} | {m['at_fault']} | {m['not_at_fault']} | "
+                         f"{'yes' if m['offroad_steps'] else 'no'} | {m['progress_ratio']:.2f} | "
+                         f"`gifs/planview_{tag}_scene{m['index']}.gif`, `gifs/plan_{tag}_scene{m['index']}.gif` |")
+
+    from PIL import Image
+    spot_dir = out_dir / "spotcheck"
+    spot_dir.mkdir(exist_ok=True)
+    lines += ["", "## Spot-check of the collision classification", "",
+              "Left: planning view at the last planning step before the event; right: MetaDrive top-down at the event.",
+              "", "| # | planner | scene | t | object | classified | WM top-mode error just before | frames |",
+              "|---|---|---|---|---|---|---|---|"]
+    for n_, (tag, i, scene, c) in enumerate(spot, 1):
+        step = int(round(c["t"] * 10))
+        try:
+            pv = Image.open(gif_dir / f"planview_{tag}_scene{i}.gif")
+            pv.seek(min(max((step - 1) // 5, 0), pv.n_frames - 1))
+            md = Image.open(gif_dir / f"plan_{tag}_scene{i}.gif")
+            md.seek(min(max((step - 1) // 2, 0), md.n_frames - 1))
+            a_, b_ = pv.convert("RGB"), md.convert("RGB").resize((pv.height, pv.height))
+            pair = Image.new("RGB", (a_.width + b_.width, a_.height), "white")
+            pair.paste(a_, (0, 0))
+            pair.paste(b_, (a_.width, 0))
+            name = f"{n_:02d}_{tag}_{scene}_t{c['t']:.1f}_{'atfault' if c['at_fault'] else 'rear'}.png"
+            pair.save(spot_dir / name)
+        except (FileNotFoundError, EOFError) as e:
+            name = f"(no frame: {e})"
+        err = f"{c['wm_err_top_m']:.1f} m" if "wm_err_top_m" in c else "–"
+        lines.append(f"| {n_} | {tag.upper()} | {scene} | {c['t']:.1f} s | {c['category']} {c['object']} | "
+                     f"{'at fault' if c['at_fault'] else 'rear-ended'} | {err} | `spotcheck/{name}` |")
+    (out_dir / "report.md").write_text("\n".join(lines) + "\n")
+    (out_dir / "summary.json").write_text(json.dumps(dict(stats=stats, coverage=cov, spot=[(e[0], e[2], e[3]) for e in spot],
+                                                          worst={t: [m["scene"] for m in r] for t, r in worst_sel.items()},
+                                                          rerun_identical=same), indent=1, default=str))
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
@@ -590,18 +716,23 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("evaluate")
+    p.add_argument("--data", default=str(PROJECT_ROOT / "sim/scenarios/nuscenes_test150"))
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
+    p.add_argument("--out", type=Path, default=OUT_DIR / "test150")
     p = sub.add_parser("plan")
     p.add_argument("--predictor", choices=("cv", "wm"), nargs="+", default=["cv"])
     p.add_argument("--scenes", type=int, nargs="*", default=[], help="scenario indices (default: all)")
     p.add_argument("--gif", type=int, nargs="*", default=[], help="scenario indices for a MetaDrive top-down GIF")
     p.add_argument("--viz", type=int, nargs="*", default=[8], help="scenario indices for the planning-view GIF")
-    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d/v2_seed42_best.pth"))
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--out", type=Path, help="JSON with metrics and chosen-plan cost terms")
+    p.add_argument("--data", help="scenario folder (default: the mini scenes)")
     p = sub.add_parser("follow")
     p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
     p = sub.add_parser("match")
     p.add_argument("--scene", default="scene-0061")
-    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d/v2_seed42_best.pth"))
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--limit", type=int, default=0, help="only the first N samples (0 = all)")
     args = parser.parse_args()
     if args.step == "metadrive":
@@ -610,7 +741,9 @@ if __name__ == "__main__":
         convert_test(args.scenes, args.workers) if args.set == "test150" else convert(args.scenes)
     elif args.step == "plan":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
-             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json")
+             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data)
+    elif args.step == "evaluate":
+        evaluate_test(Path(args.data), args.checkpoint, args.out)
     elif args.step == "follow":
         follow(args.index)
     elif args.step == "match":
