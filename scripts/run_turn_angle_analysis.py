@@ -7,6 +7,7 @@ v2 only (pass --dataset .../nuscenes_val_...pkl):
   --examples PNG     grid of example predictions, 2 per turn bin
   --follower-test D  does the ego plan reach a car following the ego? (real / braking / accelerating plan)
   --cv-baseline      constant-velocity baseline vs the model (target, moving agents, near-ego agents)
+  --timing           forward-pass time for one scene with --plans different ego plans in one batch
 """
 
 import argparse
@@ -89,6 +90,9 @@ def main():
     parser.add_argument("--followers", type=int, default=20, help="number of scenes for --follower-test")
     parser.add_argument("--cv-baseline", type=Path, metavar="JSON",
                         help="v2 multi-agent model: constant-velocity baseline vs the model, saved to JSON, then exit")
+    parser.add_argument("--timing", action="store_true",
+                        help="v2 ego-plan model: time one forward pass with one scene x --plans ego plans, then exit")
+    parser.add_argument("--plans", type=int, default=50)
     parser.add_argument("--examples", type=Path,
                         help="v2 only: save a grid of example predictions (2 per turn bin) to this PNG and exit")
     args = parser.parse_args()
@@ -126,6 +130,9 @@ def main():
     if args.dataset is None:
         args.dataset = DATASET_V2 if model_name == "v2" else DATASET
     top1 = None
+    if args.timing:
+        timing(args, device, load_v2(args.checkpoint, device))
+        return
     if args.follower_test or args.cv_baseline:
         if model_name != "v2":
             parser.error("--follower-test / --cv-baseline support --model v2 only")
@@ -588,6 +595,36 @@ def cv_baseline(args, device, model):
     args.cv_baseline.write_text(json.dumps({"checkpoint": str(args.checkpoint), "dataset": str(args.dataset),
                                             "results": result}, indent=2) + "\n")
     print(f"saved {args.cv_baseline}")
+
+
+def timing(args, device, model, index=0, warmup=5, runs=20):
+    """One val scene repeated --plans times, each copy with a different ego plan (the real path re-timed with
+    accelerations from -4 to +2 m/s^2), in one batch. Median wall time of a no-grad forward over `runs` runs."""
+    import time
+    item = v2_val_items(args)[index]
+    ego_now = item["agent_hist"][1, -1, :2].numpy()
+    heading = float(np.arctan2(item["agent_hist"][1, -1, 3], item["agent_hist"][1, -1, 2]))
+    v0 = float(np.hypot(*item["agent_hist"][1, -1, 4:6]))
+    plans = np.stack([retime_plan(ego_now, heading, item["ego_future"].numpy(), v0, a)
+                      for a in np.linspace(-4.0, 2.0, args.plans)])
+    for n in (args.plans, 1):
+        batch = {k: v[None].expand(n, *v.shape).contiguous().to(device) for k, v in item.items()}
+        batch["ego_future"] = torch.as_tensor(plans[:n], device=device)
+        times = []
+        with torch.no_grad():
+            for r in range(warmup + runs):
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                traj, logits = model(batch, plan=True)
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                if r >= warmup:
+                    times.append(1000 * (time.perf_counter() - t0))
+        spread = float(traj[:, 0].std(0).mean()) if n > 1 else 0.0
+        print(f"batch {n:3d} (1 scene x {n} ego plans) on {device}: median {np.median(times):.2f} ms "
+              f"(min {np.min(times):.2f}, max {np.max(times):.2f}) over {runs} runs | output {tuple(traj.shape)}"
+              + (f" | target prediction spread across plans {spread:.2f} m" if n > 1 else ""))
 
 
 if __name__ == "__main__":
