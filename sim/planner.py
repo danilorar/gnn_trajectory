@@ -21,10 +21,13 @@ DT, HORIZON, MODEL_DT = 0.1, 6.0, 0.5
 class ReferencePath:
     """Polyline resampled at `spacing` m with headings; extended straight 100 m past its end."""
 
-    def __init__(self, points, spacing=1.0, extend=100.0):
+    def __init__(self, points, spacing=1.0, extend=100.0, heading=None):
         pts = np.asarray(points, float)[:, :2]
         keep = np.concatenate([[True], np.linalg.norm(np.diff(pts, axis=0), axis=1) > 1e-3])
         pts = pts[keep]
+        if len(pts) < 2:                    # the logged ego never moves: a straight line along its heading
+            h = 0.0 if heading is None else heading
+            pts = np.stack([pts[0], pts[0] + 1e-3 * np.array([np.cos(h), np.sin(h)])])
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         s = np.concatenate([[0.0], np.cumsum(seg)])
         self.length = float(s[-1])
@@ -56,7 +59,8 @@ class ReferencePath:
 def reference_from_scenario(scenario):
     """The ego's full logged path (valid steps) as a ReferencePath."""
     st = scenario["tracks"][scenario["metadata"]["sdc_id"]]["state"]
-    return ReferencePath(np.asarray(st["position"])[np.asarray(st["valid"], bool)])
+    valid = np.asarray(st["valid"], bool)
+    return ReferencePath(np.asarray(st["position"])[valid], heading=float(np.asarray(st["heading"])[valid][0]))
 
 
 def logged_speed(scenario, step):

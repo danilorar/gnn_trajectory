@@ -1,11 +1,12 @@
 """Phase D prep: MetaDrive + ScenarioNet smoke tests (CPU only). Run with the .venv_sim interpreter.
 
     .venv_sim/bin/python scripts/sim_check.py metadrive   # reset + a few steps, no rendering
-    .venv_sim/bin/python scripts/sim_check.py convert     # 5 nuScenes v1.0-mini scenes -> sim/scenarios/nuscenes_mini5
+    .venv_sim/bin/python scripts/sim_check.py convert     # 5 nuScenes v1.0-mini scenes -> sim/scenarios/nuscenes_mini
     .venv_sim/bin/python scripts/sim_check.py replay      # replay one scene, top-down PNG + GIF -> outputs/sim/
     .venv_sim/bin/python scripts/sim_check.py drive       # ego on a constant command, others replay the log
     .venv_sim/bin/python scripts/sim_check.py match       # adapter (sim -> v2 tensors) vs the processed dataset
     .venv_sim/bin/python scripts/sim_check.py follow      # plan generator + tracker on the logged route, no predictor
+    .venv_sim/bin/python scripts/sim_check.py plan        # closed-loop planner (CV or world-model predictor) + expert
 
 nuScenes mini lives in data/nuscenes_mini (v1.0-mini tables only; maps -> data/maps).
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MINI_ROOT = PROJECT_ROOT / "data/nuscenes_mini"
-SCENARIO_DIR = PROJECT_ROOT / "sim/scenarios/nuscenes_mini5"
+SCENARIO_DIR = PROJECT_ROOT / "sim/scenarios/nuscenes_mini"
 OUT_DIR = PROJECT_ROOT / "outputs/sim"
 
 
@@ -397,6 +398,71 @@ def follow(index, replan_steps=5):
         env.close()
 
 
+def plan(predictor_name, scene_indices, gif_indices, checkpoint, out_json):
+    """Closed-loop planner on the converted mini scenes + the logged ego ("expert") as a reference row."""
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import json
+    import numpy as np
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from metadrive.envs.scenario_env import ScenarioEnv
+    from metadrive.policy.replay_policy import ReplayEgoCarPolicy
+    from metadrive.scenario.utils import get_number_of_scenarios
+    from sim.closed_loop import WEIGHTS, CVPredictor, WorldModelPredictor, run_scene
+
+    n = get_number_of_scenarios(str(SCENARIO_DIR))
+    scene_indices = scene_indices or list(range(n))
+    predictor = CVPredictor() if predictor_name == "cv" else WorldModelPredictor(checkpoint)
+    base = dict(use_render=False, num_scenarios=n, data_directory=str(SCENARIO_DIR), horizon=10_000, log_level=50,
+                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    results = {}
+    for label, cfg, expert in ((predictor.name + " planner", {}, False),
+                               ("expert (log)", dict(agent_policy=ReplayEgoCarPolicy), True)):
+        env = ScenarioEnv({**base, **cfg})
+        rows = []
+        try:
+            for i in scene_indices:
+                env.reset(seed=i)
+                gif = OUT_DIR / f"plan_{predictor_name}_scene{i}.gif" if (i in gif_indices and not expert) else None
+                m, chosen = run_scene(env, predictor, gif=gif, expert=expert)
+                m["chosen_plans"] = chosen
+                rows.append(m)
+                print(f"  {label:14s} {m['scene']}: at-fault {m['at_fault']}, off-road steps {m['offroad_steps']}, "
+                      f"progress {m['progress_ratio']:.2f}" + (f", plan {m['plan_ms']:.0f} ms" if not expert else ""),
+                      flush=True)
+        finally:
+            env.close()
+        results[label] = rows
+
+    head = (f" {'scene':10s} | {'':14s} | at-fault | not at fault | off-road | progress | max |a| | max |jerk| "
+            f"| MetaDrive crash steps")
+    print(head)
+    print("-" * len(head))
+    for idx in range(len(scene_indices)):
+        for label, rows in results.items():
+            m = rows[idx]
+            print(f" {m['scene']:10s} | {label:14s} | {m['at_fault']:8d} | {m['not_at_fault']:12d} | "
+                  f"{'yes' if m['offroad_steps'] else 'no':>8s} | {m['progress_ratio']:8.2f} | {m['max_acc']:8.2f} | "
+                  f"{m['max_jerk']:10.2f} | {m['metadrive_crash_steps']}")
+    for label, rows in results.items():
+        print(f" {'MEAN':10s} | {label:14s} | {np.mean([m['at_fault'] for m in rows]):8.2f} | "
+              f"{np.mean([m['not_at_fault'] for m in rows]):12.2f} | {np.mean([m['offroad_steps'] > 0 for m in rows]):8.0%} | "
+              f"{np.nanmean([m['progress_ratio'] for m in rows]):8.2f} | {np.mean([m['max_acc'] for m in rows]):8.2f} | "
+              f"{np.mean([m['max_jerk'] for m in rows]):10.2f} |")
+    print("collisions:")
+    for label, rows in results.items():
+        for m in rows:
+            for c in m["collided"]:
+                print(f"  {label:14s} {m['scene']}: object {c[0]} ({c[1]}), at fault {c[2]}, t {c[3]:.1f} s")
+    print("chosen-plan cost terms (mean over the scene):")
+    for m in results[predictor.name + " planner"]:
+        ch = m["chosen_plans"]
+        print(f"  {m['scene']}: " + ", ".join(f"{k} {np.mean([c[k] for c in ch]):.2f}"
+                                              for k in ("speed", "offset", "risk", "progress", "comfort", "offset2", "total")))
+    out_json.write_text(json.dumps({"predictor": predictor.name, "weights": WEIGHTS, "results": results}, indent=1))
+    print(f"saved {out_json}" + "".join(f", {OUT_DIR / f'plan_{predictor_name}_scene{i}.gif'}" for i in gif_indices))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
@@ -410,6 +476,12 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("plan")
+    p.add_argument("--predictor", choices=("cv", "wm"), default="cv")
+    p.add_argument("--scenes", type=int, nargs="*", default=[], help="scenario indices (default: all)")
+    p.add_argument("--gif", type=int, nargs="*", default=[0, 1], help="scenario indices to save a GIF for")
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d/v2_seed42_best.pth"))
+    p.add_argument("--out", type=Path, help="JSON with metrics and chosen-plan cost terms")
     p = sub.add_parser("follow")
     p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
     p = sub.add_parser("match")
@@ -421,6 +493,9 @@ if __name__ == "__main__":
         check_metadrive(args.steps)
     elif args.step == "convert":
         convert(args.scenes)
+    elif args.step == "plan":
+        plan(args.predictor, args.scenes, args.gif, args.checkpoint,
+             args.out or OUT_DIR / f"plan_{args.predictor}.json")
     elif args.step == "follow":
         follow(args.index)
     elif args.step == "match":

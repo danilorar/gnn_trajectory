@@ -150,7 +150,7 @@ nuScenes map, which the lane selection needs. `sim_check.py match` checks all of
 ### `scripts/sim_check.py` (Phase D prep)
 `metadrive` (reset + 20 random steps, no rendering), `drive` (constant command for the ego while the others replay),
 `match` (adapter vs processed dataset on one mini scene, plus one live MetaDrive replay), `convert` (first 5 nuScenes-mini scenes -> ScenarioNet
-scenarios in `sim/scenarios/nuscenes_mini5`), `replay` (replays one scene with the logged ego and traffic,
+scenarios in `sim/scenarios/nuscenes_mini`), `replay` (replays one scene with the logged ego and traffic,
 saves a top-down PNG and GIF to `outputs/sim/`).
 
 ## 4. v2 flags (`train_model.py --model v2`)
