@@ -46,7 +46,7 @@ within 2 s). WM = v2_d_rerun unless noted. Results: `outputs/sim/<run>/report.md
 | test150 (v1) | 2026-11-06 | 146 test | MetaDrive ego 4.52 x 1.85 m, stopped-ego collisions at fault | Superseded (classifier false positives) |
 | test150_v2 | 2026-11-06 | 146 test | Zoe ego 4.08 x 1.73 m, ego < 0.5 m/s not at fault, near-miss metrics | Superseded: order-dependent (MetaDrive physics state across resets; 1 of 15 re-rendered scenes changed) |
 | test150_v3 | 2026-11-06 | 146 test | v2 + fresh env per scene (deterministic), initial-overlap class, at-fault diagnosis | Current non-reactive result |
-| dev100 | 2026-11-06 | 100 val-split scenes (`sim/scene_lists/dev100.json`) | footprint = circles covering each box (real sizes), tracking error | Planner development / crash diagnosis (never test) |
+| dev100 | 2026-11-06 | 100 val-split scenes (`sim/scene_lists/dev100.json`) | footprint = circles covering each box (real sizes), tracking error | Planner development / crash diagnosis (never test). At fault CV 3 / WM 1, all 'no safe plan existed' (risk first seen 0.4–0.8 s before); 0 'zero predicted risk'; tracking p95 0.24 m |
 
 ## Pre-registration: closed-loop test with reactive agents
 Written 2026-11-06, before any reactive run on the test scenes. Nothing below may change after the first reactive
