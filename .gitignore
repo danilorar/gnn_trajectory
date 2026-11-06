@@ -25,3 +25,9 @@ outputs/
 /local_backups/
 /gnn_trajectory_code.zip*
 /pr19_robustness_bundle.zip*
+
+# Phase D simulator: env, cloned MetaDrive / ScenarioNet repos and converted scenarios stay local
+.venv_sim/
+/sim/metadrive/
+/sim/scenarionet/
+/sim/scenarios/
