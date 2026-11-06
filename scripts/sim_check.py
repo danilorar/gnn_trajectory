@@ -478,7 +478,8 @@ def follow(index, replan_steps=5):
         env.close()
 
 
-def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json, data_dir=None, quiet=False):
+def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json, data_dir=None, quiet=False,
+         reactive=False):
     """Closed-loop planners (CV and/or WM) on the converted mini scenes + the logged ego ("expert").
     During CV runs the WM runs in shadow mode (chosen plan only) so every at-fault collision can be compared
     with what the WM would have predicted."""
@@ -498,8 +499,16 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     runs = [(("CV" if p_ == "cv" else "WM") + " planner", CVPredictor() if p_ == "cv" else wm,
              wm if p_ == "cv" else None, {}, False) for p_ in predictor_names]
     runs.append(("expert (log)", None, None, dict(agent_policy=ReplayEgoCarPolicy), True))
+    from sim.closed_loop import EGO_SIZE_ZOE
+    # Ego = Renault Zoe size (the nuScenes ego); MetaDrive's default car is 4.52 x 1.85 m.
+    # reactive=True: logged vehicles that start behind the ego (and move > 5 m) follow their logged path with IDM
+    # instead of replaying it (MetaDrive's reactive_traffic); pedestrians / cyclists always replay.
     base = dict(use_render=False, num_scenarios=n, data_directory=str(data_dir), horizon=10_000, log_level=50,
-                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False)
+                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False, reactive_traffic=reactive,
+                vehicle_config=dict(vehicle_model="varying_dynamics", width=EGO_SIZE_ZOE[0], length=EGO_SIZE_ZOE[1]),
+                agent_configs={"default_agent": dict(use_special_color=True, spawn_lane_index=None,
+                                                     vehicle_model="varying_dynamics", width=EGO_SIZE_ZOE[0],
+                                                     length=EGO_SIZE_ZOE[1])})
     out_dir = out_json.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     results = {}
@@ -576,7 +585,7 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     return results
 
 
-def evaluate_test(data_dir, checkpoint, out_dir, seed=0):
+def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=False):
     """Closed-loop test: CV and WM planners + the expert on every scene of data_dir (frozen weights), then
     paired statistics, a per-map breakdown, coverage / timing, the 5 worst scenes per planner and a spot-check
     of the collision classification (both with GIFs, from a second deterministic pass with rendering on)."""
@@ -584,7 +593,7 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0):
     import numpy as np
     from scipy.stats import wilcoxon
     out_dir.mkdir(parents=True, exist_ok=True)
-    res = plan(["cv", "wm"], [], [], [], checkpoint, out_dir / "results.json", data_dir)
+    res = plan(["cv", "wm"], [], [], [], checkpoint, out_dir / "results.json", data_dir, reactive=reactive)
     cv, wm, ex = res["CV planner"], res["WM planner"], res["expert (log)"]
     rng = np.random.default_rng(seed)
 
@@ -605,6 +614,28 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0):
                 f"{np.mean([m['not_at_fault'] for m in rows]):.3f} | {np.mean([m['offroad_steps'] > 0 for m in rows]):.1%} | "
                 f"{np.nanmean([m['progress_ratio'] for m in rows]):.3f} | {np.mean([m['max_acc'] for m in rows]):.2f} | "
                 f"{np.mean([m['max_jerk'] for m in rows]):.2f} |")
+    if compare is not None and Path(compare).exists():
+        old = json.loads(Path(compare).read_text())["results"]
+        lines += ["## Old vs new (old: MetaDrive ego 4.52 x 1.85 m, stopped-ego collisions at fault; "
+                  "new: Zoe 4.08 x 1.73 m, collisions with ego speed < 0.5 m/s not at fault)", "",
+                  "| | at-fault / scene old -> new | scenes with at-fault old -> new | rear/not-at-fault / scene old -> new | "
+                  "progress old -> new |", "|---|---|---|---|---|"]
+        for name in ("CV planner", "WM planner", "expert (log)"):
+            o, n_ = old[name], res[name]
+            f = lambda r, k: np.mean([m[k] for m in r])
+            lines.append(f"| {name} | {f(o, 'at_fault'):.3f} -> {f(n_, 'at_fault'):.3f} | "
+                         f"{np.mean([m['at_fault'] > 0 for m in o]):.1%} -> {np.mean([m['at_fault'] > 0 for m in n_]):.1%} | "
+                         f"{f(o, 'not_at_fault'):.3f} -> {f(n_, 'not_at_fault'):.3f} | "
+                         f"{np.nanmean([m['progress_ratio'] for m in o]):.3f} -> {np.nanmean([m['progress_ratio'] for m in n_]):.3f} |")
+        lines.append("")
+    lines += ["## Near misses (means over scenes)", "", "| | min distance [m] | min TTC [s] (capped at 5) | "
+              "scenes with TTC < 1 s | share of steps with distance < 1 m |", "|---|---|---|---|---|"]
+    for name, rows in (("CV planner", cv), ("WM planner", wm), ("expert (log)", ex)):
+        ttc = np.minimum([m["min_ttc_s"] for m in rows], 5.0)
+        lines.append(f"| {name} | {np.mean([m['min_dist_m'] for m in rows]):.2f} | {ttc.mean():.2f} | "
+                     f"{np.mean(ttc < 1.0):.1%} | {np.mean([m['share_dist_below_1m'] for m in rows]):.2%} |")
+    lines += ["", "Distance = box to box (0 when touching); TTC = constant-velocity extrapolation with the planner's "
+              "circle footprints, agents behind the ego in its lane skipped.", ""]
     lines += ["## Means over scenes", "", "| | at-fault / scene | scenes with at-fault | rear-ended / scene | scenes off-road | "
               "progress ratio | max \\|a\\| | max \\|jerk\\| |", "|---|---|---|---|---|---|---|---|",
               mean_row(cv, "CV planner"), mean_row(wm, "WM planner"), mean_row(ex, "expert (log)"), ""]
@@ -616,7 +647,12 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0):
     stats = {}
     lines += ["## Paired WM - CV (same scenes)", "", "| metric | n scenes | mean WM - CV | bootstrap 95% CI | Wilcoxon p |",
               "|---|---|---|---|---|"]
-    for name, d in (("at-fault collisions / scene", d_af), ("progress ratio", d_pr), ("rear-ended / scene", d_rear)):
+    d_md = [w["min_dist_m"] - c["min_dist_m"] for w, c in zip(wm, cv)]
+    d_ttc = [min(w["min_ttc_s"], 5.0) - min(c["min_ttc_s"], 5.0) for w, c in zip(wm, cv)]
+    d_sh = [w["share_dist_below_1m"] - c["share_dist_below_1m"] for w, c in zip(wm, cv)]
+    for name, d in (("at-fault collisions / scene", d_af), ("progress ratio", d_pr), ("rear-ended / scene", d_rear),
+                    ("min distance [m]", d_md), ("min TTC [s] (capped at 5)", d_ttc),
+                    ("share of steps with distance < 1 m", d_sh)):
         m_, lo, hi = boot(d)
         stats[name] = dict(n=len(d), mean=m_, ci=[lo, hi], wilcoxon_p=wil(d))
         lines.append(f"| {name} | {len(d)} | {m_:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {stats[name]['wilcoxon_p']:.3g} |")
@@ -717,6 +753,8 @@ if __name__ == "__main__":
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
     p = sub.add_parser("evaluate")
+    p.add_argument("--compare", type=Path, help="results.json of an earlier run, for an old -> new table")
+    p.add_argument("--reactive", action="store_true", help="logged vehicles behind the ego driven by IDM")
     p.add_argument("--data", default=str(PROJECT_ROOT / "sim/scenarios/nuscenes_test150"))
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--out", type=Path, default=OUT_DIR / "test150")
@@ -728,6 +766,7 @@ if __name__ == "__main__":
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--out", type=Path, help="JSON with metrics and chosen-plan cost terms")
     p.add_argument("--data", help="scenario folder (default: the mini scenes)")
+    p.add_argument("--reactive", action="store_true", help="logged vehicles behind the ego driven by IDM")
     p = sub.add_parser("follow")
     p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
     p = sub.add_parser("match")
@@ -741,9 +780,9 @@ if __name__ == "__main__":
         convert_test(args.scenes, args.workers) if args.set == "test150" else convert(args.scenes)
     elif args.step == "plan":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
-             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data)
+             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive)
     elif args.step == "evaluate":
-        evaluate_test(Path(args.data), args.checkpoint, args.out)
+        evaluate_test(Path(args.data), args.checkpoint, args.out, compare=args.compare, reactive=args.reactive)
     elif args.step == "follow":
         follow(args.index)
     elif args.step == "match":

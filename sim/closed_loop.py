@@ -243,10 +243,14 @@ def box(x, y, yaw, length, width):
     return Polygon([(x + c * a - s * b, y + s * a + c * b) for a, b in pts])
 
 
-def collisions(ego_pose, ego_size, snapshot):
+EGO_SIZE_ZOE = (1.73, 4.08)        # (width, length) of the nuScenes ego (Renault Zoe), as in utils/dataset_v2.py
+STOPPED_SPEED = 0.5                 # m/s: a collision while the ego is (nearly) stopped is not at fault
+
+
+def collisions(ego_pose, ego_size, snapshot, ego_speed=None):
     """Objects whose logged box overlaps the ego box now; each tagged at-fault or not.
     Not at fault (as in nuPlan): the other object touches the ego from behind (its centre is behind the ego's
-    rear axle region, in roughly the same direction)."""
+    rear axle region, in roughly the same direction), or the ego is stopped (speed < STOPPED_SPEED)."""
     ex, ey, eyaw = ego_pose
     eb = box(ex, ey, eyaw, ego_size[1], ego_size[0])
     c, s = np.cos(eyaw), np.sin(eyaw)
@@ -259,8 +263,46 @@ def collisions(ego_pose, ego_size, snapshot):
             continue
         xr = c * (x - ex) + s * (y - ey)
         rear = xr < -ego_size[1] / 4 and np.cos(yaw - eyaw) > 0
-        out.append((i, cat, not rear))
+        stopped = ego_speed is not None and ego_speed < STOPPED_SPEED
+        out.append((i, cat, not (rear or stopped)))
     return out
+
+
+def near_miss(ego_pose, ego_vel, ego_size, snapshot, old_snapshot, radius=30.0, horizon=5.0):
+    """Per step: min box-to-box distance to any agent (vehicles / pedestrians / cyclists) and min time to
+    collision. TTC: ego and agents move on at their current velocity (agents: from the log 0.5 s apart) with
+    the planner's footprints (3 circles r = 1 m along vehicles, 1 circle r = 0.5 m otherwise), first overlap
+    within `horizon` s; agents behind the ego in its lane are skipped (rear-end is the follower's job)."""
+    ex, ey, eyaw = ego_pose
+    eb = box(ex, ey, eyaw, ego_size[1], ego_size[0])
+    c, s_ = np.cos(eyaw), np.sin(eyaw)
+    min_d, ttc = np.inf, np.inf
+    t = np.arange(0, horizon + 1e-9, DT)
+    e_dir = np.array([c, s_])
+    e_off = np.array([-1.0, 0.0, 1.0]) * max(ego_size[1] / 2 - 1.0, 0.0)
+    ego_c = (np.array([ex, ey]) + ego_vel * t[:, None])[:, None] + e_off[None, :, None] * e_dir   # (T, 3, 2)
+    for i, st in snapshot.items():
+        if i == EGO_ID:
+            continue
+        x, y, yaw, w_, l_, cat = st
+        if not (cat.startswith(AGENT_PREFIXES) or cat in ("VEHICLE", "CYCLIST", "PEDESTRIAN")):
+            continue
+        if np.hypot(x - ex, y - ey) > radius:
+            continue
+        min_d = min(min_d, eb.distance(box(x, y, yaw, max(l_, 0.3), max(w_, 0.3))))
+        xr, yr = c * (x - ex) + s_ * (y - ey), -s_ * (x - ex) + c * (y - ey)
+        if xr < -1.0 and abs(yr) < 1.5 and np.cos(yaw - eyaw) > np.cos(np.radians(30)):
+            continue
+        v = np.zeros(2) if (old_snapshot is None or i not in old_snapshot) else \
+            (np.array([x, y]) - np.array(old_snapshot[i][:2])) / 0.5
+        veh = cat.startswith("vehicle.")
+        a_off = (np.array([-1.0, 0.0, 1.0]) * max(l_ / 2 - 1.0, 0.0)) if veh else np.zeros(1)
+        ag_c = (np.array([x, y]) + v * t[:, None])[:, None] + a_off[None, :, None] * np.array([np.cos(yaw), np.sin(yaw)])
+        d = np.linalg.norm(ego_c[:, :, None] - ag_c[:, None], axis=-1).min(axis=(1, 2))           # (T,)
+        hit = np.flatnonzero(d < 1.0 + (1.0 if veh else 0.5))
+        if len(hit):
+            ttc = min(ttc, t[hit[0]])
+    return min_d, ttc
 
 
 AGENT_PREFIXES = ("vehicle.", "human.pedestrian")
@@ -282,7 +324,7 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     buffer.push(snapshot_from_env(env))
     steps = scenario["length"] - 1
     poses, speeds, offroad, md_crash, frames, chosen_log, hits, t_plan = [], [], 0, 0, [], [], {}, []
-    pred_log, coverage, viz_frames, t_parts = [], [], [], []
+    pred_log, coverage, viz_frames, t_parts, near_d, near_ttc = [], [], [], [], [], []
     plan, plan_t = None, 0.0
     wm = predictor if getattr(predictor, "name", "") == "WM" else shadow
     for step in range(steps):
@@ -334,8 +376,15 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         # is "> 4 m from the navigation route or route_completion < -0.1", i.e. route deviation.
         offroad += bool((not a.on_lane) or a.crash_sidewalk)
         md_crash += bool(info.get("crash"))
-        for oid, cat, fault in collisions(pose, ego_size, buffer.now()):
+        back = poses[max(0, len(poses) - 1 - replan_steps)]
+        n_back = min(replan_steps, len(poses) - 1)
+        ego_vel = (np.array(pose[:2]) - np.array(back[:2])) / (n_back * DT) if n_back else np.zeros(2)
+        for oid, cat, fault in collisions(pose, ego_size, buffer.now(), float(np.linalg.norm(ego_vel))):
             hits.setdefault(oid, (cat, fault, step + 1))
+        old = buffer.snapshots[-6] if len(buffer.snapshots) >= 6 else None
+        nm_d, nm_ttc = near_miss(pose, ego_vel, ego_size, buffer.now(), old)
+        near_d.append(nm_d)
+        near_ttc.append(nm_ttc)
         if gif is not None and step % 2 == 0:
             frame = env.render(mode="topdown", window=False, screen_size=(700, 700), film_size=(3000, 3000),
                                scaling=4, draw_target_vehicle_trajectory=True)
@@ -363,7 +412,11 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         plan_ms_p95=float(np.percentile(t_plan, 95)) if t_plan else 0.0,
         predict_ms=float(1000 * np.median([q["predict"] for q in t_parts])) if t_parts else 0.0,
         cost_ms=float(1000 * np.median([q["cost"] for q in t_parts])) if t_parts else 0.0,
-        nearby_agents=int(sum(c[0] for c in coverage)), nearby_wm=int(sum(c[1] for c in coverage)))
+        nearby_agents=int(sum(c[0] for c in coverage)), nearby_wm=int(sum(c[1] for c in coverage)),
+        min_dist_m=float(np.min(near_d)) if near_d else float("inf"),
+        min_ttc_s=float(np.min(near_ttc)) if near_ttc else float("inf"),           # inf = none within 5 s
+        share_dist_below_1m=float(np.mean(np.asarray(near_d) < 1.0)) if near_d else 0.0,
+        ego_size=list(ego_size))
     if gif is not None and frames:
         save_gif(frames, gif, 100)
     if viz is not None and viz_frames:
