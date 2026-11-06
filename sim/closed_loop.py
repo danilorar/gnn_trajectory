@@ -631,7 +631,10 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
 # Reactive agents, stage 1 (docs/reactive_agents_design.md): log-path IDM vehicles
 # ============================================================
 
-IDM = dict(s0=2.0, T=1.2, a_max=1.5, b=2.0, b_max=6.0, delta=4.0, k_s=0.5, k_v=1.0, v0_factor=1.1, v0_min=3.0,
+# Design-doc values: s0 = 2.0, T = 1.2, a_max = 1.5, b = 2.0, v0_factor = 1.1. Tuned on dev100 (validation (a) failed;
+# 3 attempts, outputs/sim/reactive_dev/report.md): attempt 3 = s0 1.0, T 0.8, a_max 3.0, b 3.0, v0_factor 1.5.
+# Not tuned: b_max, delta, the tracking gains k_s / k_v (not IDM parameters), v0_min, lateral_margin.
+IDM = dict(s0=1.0, T=0.8, a_max=3.0, b=3.0, b_max=6.0, delta=4.0, k_s=0.5, k_v=1.0, v0_factor=1.5, v0_min=3.0,
            lateral_margin=0.3)
 
 
