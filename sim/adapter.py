@@ -80,11 +80,16 @@ def snapshot_from_scenario(scenario, step):
     return snap
 
 
-def snapshot_from_env(env):
+def snapshot_from_env(env, reactive=None):
     """Logged states of the other agents at the env's current step + the live ego from MetaDrive.
-    Non-reactive traffic: everyone except the ego replays the log, so the log is their true state."""
+    Non-reactive traffic: everyone except the ego replays the log, so the log is their true state.
+    reactive (closed_loop.ReactiveTraffic): its active agents replace their logged states, finished ones are removed."""
     scenario = env.engine.data_manager.current_scenario
     snap = snapshot_from_scenario(scenario, env.episode_step)
+    if reactive is not None:
+        for oid in reactive.hidden():
+            snap.pop(oid, None)
+        snap.update(reactive.states())
     ego = env.agent
     snap[EGO_ID] = (float(ego.position[0]), float(ego.position[1]), float(ego.heading_theta),
                     float(ego.WIDTH), float(ego.LENGTH), "ego")

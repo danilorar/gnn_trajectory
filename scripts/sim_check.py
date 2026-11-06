@@ -491,7 +491,7 @@ def follow(index, replan_steps=5):
 
 
 def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json, data_dir=None, quiet=False,
-         reactive=False, device="cuda"):
+         reactive="off", device="cuda"):
     """Closed-loop planners (CV and/or WM) on the converted mini scenes + the logged ego ("expert").
     During CV runs the WM runs in shadow mode (chosen plan only) so every at-fault collision can be compared
     with what the WM would have predicted."""
@@ -513,10 +513,10 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     runs.append(("expert (log)", None, None, dict(agent_policy=ReplayEgoCarPolicy), True))
     from sim.closed_loop import EGO_SIZE_ZOE
     # Ego = Renault Zoe size (the nuScenes ego); MetaDrive's default car is 4.52 x 1.85 m.
-    # reactive=True: logged vehicles that start behind the ego (and move > 5 m) follow their logged path with IDM
-    # instead of replaying it (MetaDrive's reactive_traffic); pedestrians / cyclists always replay.
+    # reactive="metadrive": MetaDrive's reactive_traffic (only vehicles spawning behind the ego, IDM at 40 km/h);
+    # reactive="idm": our log-path IDM agents (closed_loop.ReactiveTraffic, docs/reactive_agents_design.md stage 1).
     base = dict(use_render=False, num_scenarios=n, data_directory=str(data_dir), horizon=10_000, log_level=50,
-                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False, reactive_traffic=reactive,
+                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False, reactive_traffic=reactive == "metadrive",
                 vehicle_config=dict(vehicle_model="varying_dynamics", width=EGO_SIZE_ZOE[0], length=EGO_SIZE_ZOE[1]),
                 agent_configs={"default_agent": dict(use_special_color=True, spawn_lane_index=None,
                                                      vehicle_model="varying_dynamics", width=EGO_SIZE_ZOE[0],
@@ -539,7 +539,8 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
                 env.reset(seed=i)
                 gif = out_dir / f"plan_{tag}_scene{i}.gif" if (i in gif_indices and not expert) else None
                 viz = out_dir / f"planview_{tag}_scene{i}.gif" if (i in viz_indices and not expert) else None
-                m, chosen = run_scene(env, predictor, gif=gif, expert=expert, shadow=shadow, viz=viz, device=device)
+                m, chosen = run_scene(env, predictor, gif=gif, expert=expert, shadow=shadow, viz=viz, device=device,
+                                      reactive=reactive == "idm")
                 m["chosen_plans"], m["index"] = chosen, i
                 rows.append(m)
                 print(f"  {label:14s} {m['scene']}: at-fault {m['at_fault']}, off-road steps {m['offroad_steps']}, "
@@ -604,7 +605,7 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     return results
 
 
-def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=False):
+def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive="off"):
     """Closed-loop test: CV and WM planners + the expert on every scene of data_dir (frozen weights), then
     paired statistics, a per-map breakdown, coverage / timing, the 5 worst scenes per planner and a spot-check
     of the collision classification (both with GIFs, from a second deterministic pass with rendering on)."""
@@ -630,7 +631,9 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
              "nuscenes_mini": "10 mini dev scenes"}.get(Path(data_dir).name, str(data_dir))
     lines = [f"# Closed-loop evaluation: CV vs WM planner ({title})",
              "", f"Checkpoint: `{checkpoint}`; weights frozen: col 500, progress 1, comfort 0.1, offset 0.5, veto early "
-             "risk > 0.3 within 2 s. Non-reactive agents (log replay).", ""]
+             "risk > 0.3 within 2 s. " + ("Reactive agents: log-path IDM (stage 1); a hit from behind within 2 s after the "
+                                           "ego entered the agent's path counts as at fault (unsafe cut-in)."
+                                           if reactive == "idm" else "Non-reactive agents (log replay)."), ""]
     def mean_row(rows, name):
         return (f"| {name} | {np.mean([m['at_fault'] for m in rows]):.3f} | {np.mean([m['at_fault'] > 0 for m in rows]):.1%} | "
                 f"{np.mean([m['not_at_fault'] for m in rows]):.3f} | {np.mean([m['offroad_steps'] > 0 for m in rows]):.1%} | "
@@ -748,7 +751,7 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
     for tag in ("cv", "wm"):
         idx = sorted({m["index"] for m in worst_sel[tag]} | {e[1] for e in spot if e[0] == tag})
         if idx:
-            r = plan([tag], idx, idx, idx, checkpoint, gif_dir / f"rerun_{tag}.json", data_dir)
+            r = plan([tag], idx, idx, idx, checkpoint, gif_dir / f"rerun_{tag}.json", data_dir, reactive=reactive)
             rerun[tag] = {m["index"]: m for m in r[("CV" if tag == "cv" else "WM") + " planner"]}
     first = {"cv": {m["index"]: m for m in cv}, "wm": {m["index"]: m for m in wm}}
     same = all(rerun[t][i]["at_fault"] == first[t][i]["at_fault"] and rerun[t][i]["not_at_fault"] == first[t][i]["not_at_fault"]
@@ -794,6 +797,189 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
     print("\n".join(lines))
 
 
+def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
+    """Stage-1 reactive agents, validation (docs/reactive_agents_design.md section 4), never on test.
+
+    (a) The expert (logged ego) drives in reactive mode: for every reactive agent, the position error vs its log
+        (Euclidean and along-track) at 1 / 3 / 5 / 8 s after it became active, the share of agents with error > 1 m,
+        the share of agent-steps where a_IDM was binding, and agent-agent collisions not present in the log.
+        Targets: median < 0.2 m and p95 < 1 m at 8 s; 0 new agent-agent collisions.
+    (b) Sim follower test: scenes with a moving vehicle 2-15 m behind the ego in its lane (|lateral| <= 1.5 m,
+        heading within 20 deg), ego >= 3 m/s, at a keyframe >= 2 s into the scene (one case per scene). The ego follows
+        its logged route at the logged speed, then from t0 brakes to a stop at -4 m/s^2 (tracker). Reactive vs replay:
+        collision with the follower, min gap, follower peak deceleration, reaction delay (first decel < -0.5 m/s^2),
+        and whether the follower stays behind. Target: no collision in reactive mode."""
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import json
+    import pickle
+    import numpy as np
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from metadrive.envs.scenario_env import ScenarioEnv
+    from metadrive.policy.replay_policy import ReplayEgoCarPolicy
+    from metadrive.scenario.utils import get_number_of_scenarios, read_dataset_summary
+    from sim import closed_loop as cl
+    from sim.adapter import HistoryBuffer, snapshot_from_env
+    from sim.planner import Tracker, generate_plans, logged_speed, reference_from_scenario
+
+    cl.IDM.update(idm_overrides)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    zoe = dict(vehicle_model="varying_dynamics", width=cl.EGO_SIZE_ZOE[0], length=cl.EGO_SIZE_ZOE[1])
+    base = dict(use_render=False, horizon=10_000, log_level=50, crash_vehicle_done=False, crash_object_done=False,
+                crash_human_done=False, vehicle_config=zoe,
+                agent_configs={"default_agent": dict(use_special_color=True, spawn_lane_index=None, **zoe)})
+    result = {"idm": dict(cl.IDM), "sets": {}}
+    for data_dir in data_dirs:
+        name = Path(data_dir).name
+        n = get_number_of_scenarios(str(data_dir))
+        # (a) expert drives the log
+        errs = {1: [], 3: [], 5: [], 8: []}
+        along = {1: [], 3: [], 5: [], 8: []}
+        ep_max, new_coll, log_coll, bind, n_agents, standoff = [], 0, 0, [], 0, 0.0
+        for i in range(n):
+            env = ScenarioEnv({**base, "num_scenarios": n, "data_directory": str(data_dir),
+                               "agent_policy": ReplayEgoCarPolicy})
+            try:
+                env.reset(seed=i)
+                m, _ = cl.run_scene(env, None, expert=True, reactive=True)
+            finally:
+                env.close()
+            R = m["reactive"]
+            n_agents += R["n_agents"]
+            new_coll += R["new_agent_collisions"]
+            log_coll += R["log_agent_collisions"]
+            bind.append(R["idm_binding_share"])
+            standoff = max(standoff, R["max_ego_standoff_s"])
+            for oid, lst in R["errors"].items():
+                d = {round(t, 1): (e, al) for t, e, al in lst}
+                for tau in errs:
+                    if float(tau) in d:
+                        errs[tau].append(d[float(tau)][0])
+                        along[tau].append(d[float(tau)][1])
+                ep_max.append(max(e for _, e, _ in lst))
+        a_res = {f"{tau}s": dict(n=len(errs[tau]), median=float(np.median(errs[tau])) if errs[tau] else None,
+                                 p95=float(np.percentile(errs[tau], 95)) if errs[tau] else None,
+                                 along_median=float(np.median(along[tau])) if along[tau] else None,
+                                 share_above_1m=float(np.mean(np.asarray(errs[tau]) > 1.0)) if errs[tau] else None)
+                 for tau in errs}
+        a_res.update(agents=n_agents, episode_max_median=float(np.median(ep_max)) if ep_max else None,
+                     episode_max_p95=float(np.percentile(ep_max, 95)) if ep_max else None,
+                     share_agents_episode_err_above_1m=float(np.mean(np.asarray(ep_max) > 1.0)) if ep_max else None,
+                     idm_binding_share=float(np.mean(bind)), new_agent_collisions=new_coll,
+                     log_agent_collisions=log_coll, max_ego_standoff_s=standoff,
+                     pass_target=bool(a_res["8s"]["median"] is not None and a_res["8s"]["median"] < 0.2
+                                      and a_res["8s"]["p95"] < 1.0 and new_coll == 0))
+        print(f"[{name}] (a) expert drives the log: " + json.dumps(a_res), flush=True)
+
+        # (b) follower cases from the log
+        summ, ids, mapping = read_dataset_summary(str(data_dir))
+        cases = []
+        for i, f in enumerate(ids):
+            sc = pickle.loads((Path(data_dir) / mapping[f] / f).read_bytes())
+            sdc = sc["tracks"][sc["metadata"]["sdc_id"]]["state"]
+            for t0 in range(20, sc["length"] - 40, 5):
+                if not sdc["valid"][t0]:
+                    continue
+                ex, ey = sdc["position"][t0][:2]
+                eh = sdc["heading"][t0]
+                if logged_speed(sc, t0) < 3.0:
+                    continue
+                found = None
+                for oid, tr in sc["tracks"].items():
+                    if oid == sc["metadata"]["sdc_id"] or tr["type"] != "VEHICLE" or not tr["state"]["valid"][t0]:
+                        continue
+                    ag = cl.LogPathAgent(oid, tr)
+                    if not ag.eligible:
+                        continue
+                    x, y = tr["state"]["position"][t0][:2]
+                    c, s_ = np.cos(eh), np.sin(eh)
+                    xr, yr = c * (x - ex) + s_ * (y - ey), -s_ * (x - ex) + c * (y - ey)
+                    dh = abs(np.angle(np.exp(1j * (tr["state"]["heading"][t0] - eh))))
+                    if -15 <= xr <= -2 and abs(yr) <= 1.5 and dh <= np.radians(20):
+                        found = oid
+                        break
+                if found:
+                    cases.append((i, t0, found))
+                    break
+            if len(cases) >= cases_per_set:
+                break
+        rows = []
+        for i, t0, fid in cases:
+            row = dict(scene_index=i, t0=t0 / 10, follower=fid[:8])
+            for mode in ("reactive", "replay"):
+                env = ScenarioEnv({**base, "num_scenarios": n, "data_directory": str(data_dir)})
+                try:
+                    env.reset(seed=i)
+                    scen = env.engine.data_manager.current_scenario
+                    row["scene"] = scen["metadata"]["scenario_id"]
+                    ref = reference_from_scenario(scen)
+                    rt = cl.ReactiveTraffic(env) if mode == "reactive" else None
+                    buf, tracker = HistoryBuffer(), Tracker()
+                    buf.push(snapshot_from_env(env, rt))
+                    plan, plan_t, gaps, fv, hit, behind = None, 0.0, [], [], False, True
+                    for step in range(min(scen["length"] - 1, t0 + 80)):
+                        a = env.agent
+                        st = (float(a.position[0]), float(a.position[1]), float(a.heading_theta), float(a.speed))
+                        if step % 5 == 0 or (step == t0):
+                            if step < t0:
+                                _, d_, _ = generate_plans(ref, st, speeds=[logged_speed(scen, step)], offsets=[0.0])
+                            else:
+                                _, d_, _ = generate_plans(ref, st, speeds=[0.0], offsets=[0.0], a_max=4.0)
+                            plan, plan_t = d_[0], 0.0
+                        env.step(tracker.action(*st, plan, plan_t))
+                        plan_t += cl.DT
+                        if rt is not None:
+                            pre = snapshot_from_env(env, rt)
+                            rt.step(pre, buf.snapshots[-5] if len(buf.snapshots) >= 5 else None,
+                                    np.asarray(env.agent.velocity[:2], float))
+                        buf.push(snapshot_from_env(env, rt))
+                        now = buf.now()
+                        if step + 1 >= t0 and fid in now:
+                            x, y, yaw, w_, l_, _ = now[fid]
+                            ex, ey, eh = float(env.agent.position[0]), float(env.agent.position[1]), float(env.agent.heading_theta)
+                            eb = cl.box(ex, ey, eh, cl.EGO_SIZE_ZOE[1], cl.EGO_SIZE_ZOE[0])
+                            fb = cl.box(x, y, yaw, l_, w_)
+                            gaps.append(eb.distance(fb))
+                            hit |= eb.intersects(fb)
+                            xr = np.cos(eh) * (x - ex) + np.sin(eh) * (y - ey)
+                            behind &= xr < 0
+                            fv.append((step + 1, rt.agents[fid].v if (rt and fid in rt.agents and rt.agents[fid].active)
+                                       else None, (x, y)))
+                finally:
+                    env.close()
+                # follower speed: reactive state, or 2 Hz positions for replay
+                pos = np.array([p_ for _, _, p_ in fv])
+                if mode == "reactive" and all(v is not None for _, v, _ in fv):
+                    v = np.array([v for _, v, _ in fv])
+                    acc = np.diff(v) / cl.DT
+                    k = 1
+                else:
+                    v = np.linalg.norm(np.diff(pos[::5], axis=0), axis=1) / 0.5 if len(pos) > 5 else np.zeros(1)
+                    acc = np.diff(v) / 0.5 if len(v) > 1 else np.zeros(1)
+                    k = 5
+                dec = np.flatnonzero(acc < -0.5)
+                row[mode] = dict(collision=bool(hit), min_gap_m=float(min(gaps)) if gaps else None,
+                                 peak_decel=float(-acc.min()) if len(acc) else 0.0,
+                                 reaction_delay_s=float(dec[0] * cl.DT * k) if len(dec) else None,
+                                 stays_behind=bool(behind))
+            rows.append(row)
+            print(f"[{name}] (b) {row}", flush=True)
+        b_res = dict(cases=len(rows), reactive_collisions=sum(r["reactive"]["collision"] for r in rows),
+                     replay_collisions=sum(r["replay"]["collision"] for r in rows),
+                     reactive_min_gap_median=float(np.median([r["reactive"]["min_gap_m"] for r in rows])) if rows else None,
+                     reactive_peak_decel_median=float(np.median([r["reactive"]["peak_decel"] for r in rows])) if rows else None,
+                     reactive_reaction_delay_median=float(np.median([r["reactive"]["reaction_delay_s"] for r in rows
+                                                                     if r["reactive"]["reaction_delay_s"] is not None]))
+                     if any(r["reactive"]["reaction_delay_s"] is not None for r in rows) else None,
+                     reactive_stays_behind=sum(r["reactive"]["stays_behind"] for r in rows))
+        b_res["pass_target"] = bool(rows and b_res["reactive_collisions"] == 0)
+        print(f"[{name}] (b) summary: {json.dumps(b_res)}", flush=True)
+        result["sets"][name] = dict(a=a_res, b=b_res, b_cases=rows)
+    tag = "_".join(f"{k}{v}" for k, v in idm_overrides.items()) or "doc"
+    (out_dir / f"validation_{tag}.json").write_text(json.dumps(result, indent=1, default=str))
+    print(f"saved {out_dir / f'validation_{tag}.json'}")
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
@@ -812,9 +998,17 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("reactive-check")
+    p.add_argument("--data", nargs="+", default=[str(PROJECT_ROOT / "sim/scenarios/nuscenes_mini"),
+                                                 str(PROJECT_ROOT / "sim/scenarios/nuscenes_dev100")])
+    p.add_argument("--out", type=Path, default=OUT_DIR / "reactive_dev")
+    p.add_argument("--idm", default="", help="IDM overrides, e.g. a_max=3.0,T=1.0 (tuning on dev100 only)")
+    p.add_argument("--cases", type=int, default=20)
     p = sub.add_parser("evaluate")
+    p.add_argument("--idm", default="", help="IDM overrides used for --reactive idm")
     p.add_argument("--compare", type=Path, help="results.json of an earlier run, for an old -> new table")
-    p.add_argument("--reactive", action="store_true", help="logged vehicles behind the ego driven by IDM")
+    p.add_argument("--reactive", choices=("off", "metadrive", "idm"), default="off",
+                   help="metadrive: MetaDrive's reactive_traffic; idm: log-path IDM agents (stage 1)")
     p.add_argument("--data", default=str(PROJECT_ROOT / "sim/scenarios/nuscenes_test150"))
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--out", type=Path, default=OUT_DIR / "test150")
@@ -826,7 +1020,8 @@ if __name__ == "__main__":
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
     p.add_argument("--out", type=Path, help="JSON with metrics and chosen-plan cost terms")
     p.add_argument("--data", help="scenario folder (default: the mini scenes)")
-    p.add_argument("--reactive", action="store_true", help="logged vehicles behind the ego driven by IDM")
+    p.add_argument("--reactive", choices=("off", "metadrive", "idm"), default="off",
+                   help="metadrive: MetaDrive's reactive_traffic; idm: log-path IDM agents (stage 1)")
     p.add_argument("--device", default="cuda", help="device for the WM and the collision cost (cuda / cpu)")
     p = sub.add_parser("follow")
     p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
@@ -843,7 +1038,15 @@ if __name__ == "__main__":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
              args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive,
              device=args.device)
+    elif args.step == "reactive-check":
+        if any("test150" in d for d in args.data):
+            raise SystemExit("reactive-check is for the mini / dev scenes only, never test")
+        ov = {k: float(v) for k, v in (kv.split("=") for kv in args.idm.split(",") if kv)}
+        reactive_check(args.data, args.out, ov, args.cases)
     elif args.step == "evaluate":
+        if args.idm:
+            from sim import closed_loop as _cl
+            _cl.IDM.update({k: float(v) for k, v in (kv.split("=") for kv in args.idm.split(",") if kv)})
         evaluate_test(Path(args.data), args.checkpoint, args.out, compare=args.compare, reactive=args.reactive)
     elif args.step == "follow":
         follow(args.index)

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sim.adapter import EGO_ID, HistoryBuffer, snapshot_from_env
+from sim.adapter import EGO_ID, HistoryBuffer, snapshot_from_env, snapshot_from_scenario
 from sim.planner import DT, OFFSETS, SPEEDS, Tracker, generate_plans, reference_from_scenario
 
 WEIGHTS = dict(col=500.0, progress=1.0, comfort=0.1, offset=0.5)       # frozen
@@ -285,7 +285,7 @@ def collisions(ego_pose, ego_size, snapshot, ego_speed=None):
         xr = c * (x - ex) + s * (y - ey)
         rear = xr < -ego_size[1] / 4 and np.cos(yaw - eyaw) > 0
         stopped = ego_speed is not None and ego_speed < STOPPED_SPEED
-        out.append((i, cat, not (rear or stopped)))
+        out.append((i, cat, not (rear or stopped), rear))
     return out
 
 
@@ -328,8 +328,11 @@ def near_miss(ego_pose, ego_vel, ego_size, snapshot, old_snapshot, radius=30.0, 
 AGENT_PREFIXES = ("vehicle.", "human.pedestrian")
 
 
+CUT_IN_S = 2.0      # reactive mode: hit from behind within 2 s after the ego entered the agent's path = unsafe cut-in
+
+
 def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
-              nearby_radius=30.0, device="cuda"):
+              nearby_radius=30.0, device="cuda", reactive=False):
     """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
 
     shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
@@ -341,7 +344,9 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     ref = reference_from_scenario(scenario)
     ego_size = (float(env.agent.WIDTH), float(env.agent.LENGTH))
     buffer, tracker = HistoryBuffer(), Tracker()
-    buffer.push(snapshot_from_env(env))
+    rt = ReactiveTraffic(env) if reactive else None
+    buffer.push(snapshot_from_env(env, rt))
+    r_err, r_pairs, r_log_pairs, r_standoff = {}, set(), set(), 0
     steps = scenario["length"] - 1
     poses, speeds, offroad, md_crash, frames, chosen_log, hits, t_plan = [], [], 0, 0, [], [], {}, []
     pred_log, coverage, viz_frames, t_parts, near_d, near_ttc, track_err = [], [], [], [], [], [], []
@@ -390,14 +395,41 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
             act = tracker.action(x, y, yaw, v, plan, plan_t)
         _, _, _, _, info = env.step(act)
         plan_t += DT
+        if rt is not None:                               # advance the reactive agents to the new step
+            pre = snapshot_from_env(env, rt)
+            old_r = buffer.snapshots[-5] if len(buffer.snapshots) >= 5 else None
+            rt.step(pre, old_r, np.asarray(env.agent.velocity[:2], float))
         if not expert:                                   # tracking error: driven vs planned position at the same time
             j = min(int(round(plan_t / DT)), len(plan) - 1)
             dxy = np.asarray(env.agent.position[:2]) - plan[j, :2]
             ph = plan[j, 2]
             track_err.append((float(np.hypot(*dxy)), float(-np.sin(ph) * dxy[0] + np.cos(ph) * dxy[1])))
-        buffer.push(snapshot_from_env(env))
+        buffer.push(snapshot_from_env(env, rt))
         a = env.agent
         pose = (float(a.position[0]), float(a.position[1]), float(a.heading_theta))
+        if rt is not None:                               # validation stats of the reactive agents
+            t_now = int(env.episode_step)
+            log_now = snapshot_from_scenario(scenario, t_now)
+            for ag in rt.agents.values():
+                if not ag.active or not (ag.t0 <= t_now < ag.t1):
+                    continue
+                x_, y_, _ = ag.pose()
+                lx, ly = log_now[ag.oid][:2] if ag.oid in log_now else (x_, y_)
+                s_log_now, _ = ag.log_state(t_now)
+                r_err.setdefault(ag.oid, []).append((round((t_now - ag.t0) * DT, 1), float(np.hypot(x_ - lx, y_ - ly)),
+                                                     float(abs(ag.s - s_log_now))))
+                bx = box(x_, y_, ag.pose()[2], ag.length, ag.width)
+                for oid2, st2 in buffer.now().items():
+                    if oid2 in (EGO_ID, ag.oid) or not st2[5].startswith(("vehicle.",)) or \
+                            np.hypot(st2[0] - x_, st2[1] - y_) > 15:
+                        continue
+                    if bx.intersects(box(st2[0], st2[1], st2[2], st2[4], st2[3])):
+                        pair = tuple(sorted((ag.oid, oid2)))
+                        l1, l2 = log_now.get(pair[0]), log_now.get(pair[1])
+                        in_log = l1 is not None and l2 is not None and box(l1[0], l1[1], l1[2], l1[4], l1[3]).intersects(
+                            box(l2[0], l2[1], l2[2], l2[4], l2[3]))
+                        (r_log_pairs if in_log else r_pairs).add(pair)
+            r_standoff = max([r_standoff] + list(rt.deadlock_steps.values()))
         poses.append(pose)
         speeds.append(float(a.speed))
         # off-road = not on any lane surface (lanes + connectors) or on a sidewalk. MetaDrive's own out_of_road
@@ -407,8 +439,11 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         back = poses[max(0, len(poses) - 1 - replan_steps)]
         n_back = min(replan_steps, len(poses) - 1)
         ego_vel = (np.array(pose[:2]) - np.array(back[:2])) / (n_back * DT) if n_back else np.zeros(2)
-        for oid, cat, fault in collisions(pose, ego_size, buffer.now(), float(np.linalg.norm(ego_vel))):
-            hits.setdefault(oid, (cat, fault, step + 1))
+        for oid, cat, fault, rear in collisions(pose, ego_size, buffer.now(), float(np.linalg.norm(ego_vel))):
+            cut_in = False
+            if rt is not None and rear and oid in rt.agents and rt.agents[oid].ego_on_path_since is not None:
+                cut_in = (int(env.episode_step) - rt.agents[oid].ego_on_path_since) * DT <= CUT_IN_S
+            hits.setdefault(oid, (cat, fault or cut_in, step + 1, cut_in))
         old = buffer.snapshots[-6] if len(buffer.snapshots) >= 6 else None
         nm_d, nm_ttc = near_miss(pose, ego_vel, ego_size, buffer.now(), old)
         near_d.append(nm_d)
@@ -424,9 +459,10 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     acc = np.diff(v2) / 0.5 if len(v2) > 1 else np.zeros(1)
     jerk = np.diff(acc) / 0.5 if len(acc) > 1 else np.zeros(1)
     collided = []
-    for oid, (cat, fault, t) in hits.items():
+    for oid, (cat, fault, t, cut_in) in hits.items():
         kind = classify_collision(t / 10, fault)
-        c = dict(object=oid[:8], object_id=oid, category=cat, at_fault=kind == "at_fault", kind=kind, t=t / 10)
+        c = dict(object=oid[:8], object_id=oid, category=cat, at_fault=kind == "at_fault", kind=kind, t=t / 10,
+                 unsafe_cut_in=bool(cut_in and kind == "at_fault"))
         if kind == "at_fault":
             if pred_log:
                 c.update(wm_prediction_before(pred_log, oid, t, scenario, ego_size))
@@ -453,6 +489,9 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         track_err_p95_m=float(np.percentile([e[0] for e in track_err], 95)) if track_err else 0.0,
         track_err_max_m=float(np.max([e[0] for e in track_err])) if track_err else 0.0,
         track_lat_p95_m=float(np.percentile([abs(e[1]) for e in track_err], 95)) if track_err else 0.0,
+        reactive=None if rt is None else dict(
+            n_agents=len(rt.agents), errors=r_err, new_agent_collisions=len(r_pairs), log_agent_collisions=len(r_log_pairs),
+            idm_binding_share=float(rt.binding_steps / max(rt.active_steps, 1)), max_ego_standoff_s=r_standoff * DT),
         ego_size=list(ego_size), trace=np.asarray(poses)[:, :2].round(4).tolist(),
         chosen_index=[(c["speed"], c["offset"]) for c in chosen_log])
     if gif is not None and frames:
@@ -586,3 +625,286 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
     img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
     plt.close(fig)
     return img
+
+
+# ============================================================
+# Reactive agents, stage 1 (docs/reactive_agents_design.md): log-path IDM vehicles
+# ============================================================
+
+IDM = dict(s0=2.0, T=1.2, a_max=1.5, b=2.0, b_max=6.0, delta=4.0, k_s=0.5, k_v=1.0, v0_factor=1.1, v0_min=3.0,
+           lateral_margin=0.3)
+
+
+class _HoldPolicy:
+    """Placeholder policy for MetaDrive objects driven by ReactiveTraffic: the traffic manager neither replays nor
+    removes objects whose policy is not ReplayTrafficParticipantPolicy, so the pose set by ReactiveTraffic persists."""
+
+    def __init__(self, control_object, *args, **kwargs):
+        self.control_object = control_object
+
+    def act(self, *args, **kwargs):
+        return None
+
+    def destroy(self):
+        pass
+
+    def reset(self):
+        pass
+
+
+class LogPathAgent:
+    """One reactive vehicle: keeps its logged path exactly; only its speed changes.
+    The path is the polyline of its valid logged positions (longest valid run), resampled at 0.5 m; s_log(t) is the
+    logged arclength per sim step, v_log(t) the logged speed from the 2 Hz keyframes (0.5 s differences)."""
+
+    def __init__(self, oid, track, sim_dt=DT):
+        st = track["state"]
+        valid = np.asarray(st["valid"], bool)
+        runs, start = [], None
+        for t, v in enumerate(list(valid) + [False]):
+            if v and start is None:
+                start = t
+            elif not v and start is not None:
+                runs.append((start, t))
+                start = None
+        self.t0, self.t1 = max(runs, key=lambda r: r[1] - r[0]) if runs else (0, 0)     # [t0, t1)
+        pos = np.asarray(st["position"])[self.t0:self.t1, :2].astype(float)
+        self.oid, self.width = oid, float(np.ravel(st["width"][self.t0])[0])
+        self.length = float(np.ravel(st["length"][self.t0])[0])
+        self.category = track["metadata"].get("type", track["type"])
+        seg = np.linalg.norm(np.diff(pos, axis=0), axis=1) if len(pos) > 1 else np.zeros(0)
+        self.s_log = np.concatenate([[0.0], np.cumsum(seg)])                       # per step in [t0, t1)
+        self.path_len = float(self.s_log[-1]) if len(self.s_log) else 0.0
+        # 2 Hz logged speed (keyframes are every 5th step from the scenario start), interpolated per step
+        steps = np.arange(self.t0, self.t1)
+        keys = steps[steps % 5 == 0]
+        if len(keys) >= 2:
+            sk = self.s_log[keys - self.t0]
+            vk = np.diff(sk) / 0.5
+            mid = (keys[:-1] + keys[1:]) / 2.0
+            self.v_log = np.interp(steps, mid, vk)
+        else:
+            self.v_log = np.zeros(len(steps))
+        self.v_max_log = float(self.v_log.max()) if len(self.v_log) else 0.0
+        heading = np.asarray(st["heading"])[self.t0:self.t1]
+        self.reversing = False
+        if len(pos) > 5:
+            d = np.diff(pos, axis=0)
+            mv = np.linalg.norm(d, axis=1) > 0.05
+            if mv.sum() > 5:
+                dirs = np.arctan2(d[mv, 1], d[mv, 0])
+                self.reversing = np.mean(np.cos(dirs - heading[1:][mv]) < 0) > 0.5
+        disp = float(np.linalg.norm(pos[-1] - pos[0])) if len(pos) else 0.0
+        self.eligible = (self.category.startswith("vehicle.") and disp >= 2.0 and self.v_max_log >= 0.5
+                         and not self.reversing and (self.t1 - self.t0) >= 2.0 / sim_dt and self.path_len >= 5.0)
+        if self.eligible:
+            n = max(2, int(np.ceil(self.path_len / 0.5)) + 1)
+            grid = np.linspace(0.0, self.path_len, n)
+            keep = np.concatenate([[True], np.diff(self.s_log) > 1e-6])
+            sx, px = self.s_log[keep], pos[keep]
+            self.S = grid
+            self.XY = np.stack([np.interp(grid, sx, px[:, 0]), np.interp(grid, sx, px[:, 1])], 1)
+            dxy = np.gradient(self.XY, axis=0)
+            self.YAW = np.arctan2(dxy[:, 1], dxy[:, 0])
+            self.v0 = max(IDM["v0_factor"] * self.v_max_log, IDM["v0_min"])
+        self.active, self.done = False, False
+        self.s = self.v = 0.0
+        self.a_track = self.a_idm = 0.0
+        self.leader = None
+        self.ego_on_path_since = None
+
+    def log_state(self, t):
+        i = int(np.clip(t - self.t0, 0, len(self.s_log) - 1))
+        return float(self.s_log[i]), float(self.v_log[i]) if t < self.t1 else 0.0
+
+    def pose(self):
+        x = np.interp(self.s, self.S, self.XY[:, 0])
+        y = np.interp(self.s, self.S, self.XY[:, 1])
+        i = int(np.clip(np.searchsorted(self.S, self.s), 0, len(self.S) - 1))
+        return float(x), float(y), float(self.YAW[i])
+
+
+def _corners(x, y, yaw, length, width):
+    c, s = np.cos(yaw), np.sin(yaw)
+    pts = np.array([[1, 1], [1, -1], [-1, -1], [-1, 1]]) * [length / 2, width / 2]
+    return np.stack([x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1]], 1)
+
+
+class ReactiveTraffic:
+    """Stage-1 reactive traffic: every moving logged vehicle (LogPathAgent.eligible) keeps its logged path and gets
+    speed a = clip(min(a_track, a_IDM), -b_max, a_max); pedestrians, cyclists, static / short / reversing vehicles
+    replay the log. Leader = the nearest object physically on the agent's path ahead (any corner within
+    width/2 + 0.3 m of the path, in the window [s, s + H], H = max(30 m, v T + 20 m)), including the ego by its
+    current state (no anticipation, no plan). All accelerations come from the previous state, then all agents are
+    integrated together. This class is the source of truth for the reactive agents' states; MetaDrive objects of
+    those vehicles (if spawned) are moved to match (policy swapped to a hold policy)."""
+
+    def __init__(self, env):
+        self.env = env
+        scen = env.engine.data_manager.current_scenario
+        self.sdc = scen["metadata"]["sdc_id"]
+        self.scenario = scen
+        self.agents = {oid: LogPathAgent(oid, tr) for oid, tr in scen["tracks"].items()
+                       if oid != self.sdc and tr["type"] == "VEHICLE"}
+        self.agents = {k: a for k, a in self.agents.items() if a.eligible}
+        self.t = int(env.episode_step)
+        self.binding_steps = self.active_steps = 0
+        self.deadlock_steps = {}
+        self._activate()
+
+    # -- helpers
+    def _tm(self):
+        return self.env.engine.managers["traffic_manager"]
+
+    def _sync_object(self, a):
+        tm = self._tm()
+        obj_id = tm._scenario_id_to_obj_id.get(a.oid) if tm._scenario_id_to_obj_id else None
+        if obj_id is None:
+            return
+        obj = tm.spawned_objects.get(obj_id)
+        if obj is None:
+            return
+        if not isinstance(self.env.engine.get_policy(obj_id), _HoldPolicy):
+            self.env.engine.add_policy(obj_id, _HoldPolicy, obj)
+        x, y, yaw = a.pose()
+        obj.set_position([x, y])
+        obj.set_heading_theta(yaw)
+        obj.set_velocity([np.cos(yaw), np.sin(yaw)], a.v)
+
+    def _remove_object(self, a):
+        tm = self._tm()
+        obj_id = tm._scenario_id_to_obj_id.get(a.oid) if tm._scenario_id_to_obj_id else None
+        if obj_id is not None and obj_id in tm.spawned_objects:
+            tm.clear_objects([obj_id])                  # keep the id mapping so the manager does not respawn it
+
+    def _activate(self):
+        ego = self.env.agent
+        eb = box(ego.position[0], ego.position[1], ego.heading_theta, ego.LENGTH, ego.WIDTH)
+        for a in self.agents.values():
+            if not a.active and not a.done and a.t0 <= self.t < a.t1:
+                s_log, v_log = a.log_state(self.t)
+                a.s, a.v = s_log, v_log
+                x, y, yaw = a.pose()
+                if eb.intersects(box(x, y, yaw, a.length, a.width)):      # overlaps the ego: replay until clear
+                    continue
+                a.active = True
+                self._sync_object(a)
+
+    def states(self):
+        """{oid: (x, y, yaw, width, length, category)} of the active reactive agents (overrides the log)."""
+        return {a.oid: (*a.pose(), a.width, a.length, a.category) for a in self.agents.values() if a.active}
+
+    def hidden(self):
+        """Ids whose logged state must not be used (reactive agents that are done, or not yet active but valid)."""
+        return {a.oid for a in self.agents.values() if a.done}
+
+    def _objects(self, snapshot, old_snapshot, ego_vel):
+        """Candidate leaders: (id, corners (4, 2), velocity (2,))."""
+        out = []
+        for oid, st in snapshot.items():
+            x, y, yaw, w, l, cat = st
+            if oid == EGO_ID:
+                v = ego_vel
+            elif oid in self.agents and self.agents[oid].active:
+                a = self.agents[oid]
+                v = a.v * np.array([np.cos(yaw), np.sin(yaw)])
+            else:
+                v = np.zeros(2) if (old_snapshot is None or oid not in old_snapshot) else \
+                    (np.array([x, y]) - np.array(old_snapshot[oid][:2])) / 0.5
+            out.append((oid, _corners(x, y, yaw, max(l, 0.3), max(w, 0.3)), v))
+        return out
+
+    def _leader(self, a, objects, ignore=()):
+        """(gap, leader speed along the path, id) of the nearest object on the path ahead, or None; and whether the
+        ego is on the path ahead."""
+        H = max(30.0, a.v * IDM["T"] + 20.0)
+        lo, hi = a.s, min(a.s + H, a.path_len + 10.0)
+        i0, i1 = np.searchsorted(a.S, lo), np.searchsorted(a.S, min(hi, a.path_len), side="right")
+        if i1 - i0 < 1:
+            return None, False
+        S, XY, YAW = a.S[i0:i1], a.XY[i0:i1], a.YAW[i0:i1]
+        ax, ay, _ = a.pose()
+        best, ego_on = None, False
+        for oid, corners, vel in objects:
+            if oid == a.oid or oid in ignore:
+                continue
+            if np.min(np.linalg.norm(corners - [ax, ay], axis=1)) > H + 10:
+                continue
+            d = np.linalg.norm(corners[:, None] - XY[None], axis=-1)          # (4, W)
+            j = d.argmin(1)
+            t = np.stack([np.cos(YAW[j]), np.sin(YAW[j])], 1)
+            rel = corners - XY[j]
+            lat = np.abs(t[:, 0] * rel[:, 1] - t[:, 1] * rel[:, 0])
+            along = S[j] + (rel * t).sum(1)
+            on = (lat < a.width / 2 + IDM["lateral_margin"]) & (along > a.s)
+            if not on.any():
+                continue
+            if oid == EGO_ID:
+                ego_on = True
+            gap = float(along[on].min() - a.s - a.length / 2)
+            k = int(np.argmin(np.where(on, along, np.inf)))
+            v_lead = float(vel @ t[k])
+            if best is None or gap < best[0]:
+                best = (gap, v_lead, oid)
+        return best, ego_on
+
+    def step(self, snapshot, old_snapshot, ego_vel):
+        """Advance all active agents by one sim step (call after env.step, with the snapshot at the new step built
+        from the log + the agents' current states). Returns the agents' new states."""
+        self.t = int(self.env.episode_step)
+        objects = self._objects(snapshot, old_snapshot, ego_vel)
+        act = [a for a in self.agents.values() if a.active]
+        leaders = {a.oid: self._leader(a, objects) for a in act}
+        # mutual leaders: the agent that reaches the conflict point earlier in its log keeps priority
+        for a in act:
+            lead = leaders[a.oid][0]
+            if lead is None or lead[2] not in leaders:
+                continue
+            b = self.agents[lead[2]]
+            lb = leaders[b.oid][0]
+            if lb is None or lb[2] != a.oid:
+                continue
+            def log_time(x, gap):
+                target = x.s + max(gap, 0.0) + x.length / 2
+                k = np.searchsorted(x.s_log, target)
+                return x.t0 + k
+            if log_time(a, lead[0]) <= log_time(b, lb[0]):
+                leaders[a.oid] = self._leader(a, objects, ignore=(b.oid,))
+        acc = {}
+        for a in act:
+            s_log, v_log = a.log_state(self.t)
+            if self.t >= a.t1:
+                s_log, v_log = a.path_len, 0.0
+            a_track = IDM["k_s"] * (s_log - a.s) + IDM["k_v"] * (v_log - a.v)
+            lead, ego_on = leaders[a.oid]
+            free = IDM["a_max"] * (1 - (a.v / a.v0) ** IDM["delta"])
+            if lead is None:
+                a_idm = free
+            else:
+                gap, v_l, _ = lead
+                dv = a.v - v_l
+                s_star = IDM["s0"] + max(0.0, a.v * IDM["T"] + a.v * dv / (2 * np.sqrt(IDM["a_max"] * IDM["b"])))
+                a_idm = free - IDM["a_max"] * (s_star / max(gap, 0.1)) ** 2
+            a.a_track, a.a_idm, a.leader = a_track, a_idm, (lead[2] if lead else None)
+            acc[a.oid] = float(np.clip(min(a_track, a_idm), -IDM["b_max"], IDM["a_max"]))
+            self.active_steps += 1
+            self.binding_steps += a_idm < a_track
+            # ego on the path ahead: since when (for the unsafe cut-in rule)
+            if ego_on:
+                a.ego_on_path_since = a.ego_on_path_since if a.ego_on_path_since is not None else self.t
+            else:
+                a.ego_on_path_since = None
+            if lead is not None and lead[2] == EGO_ID and a.v < 0.1:
+                self.deadlock_steps[a.oid] = self.deadlock_steps.get(a.oid, 0) + 1
+            else:
+                self.deadlock_steps[a.oid] = 0
+        for a in act:                                   # integrate all together
+            a.v = float(np.clip(a.v + acc[a.oid] * DT, 0.0, a.v0))
+            a.s = float(min(a.s + a.v * DT, a.path_len))
+            if a.s >= a.path_len - 1e-3 and self.t >= a.t1 - 1:
+                a.active, a.done = False, True
+                self._remove_object(a)
+            else:
+                self._sync_object(a)
+        self._activate()
+        return self.states()
