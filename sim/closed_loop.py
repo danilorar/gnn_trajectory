@@ -14,8 +14,8 @@ Cost per plan (lowest wins), weights FROZEN on 2026-11-06 after the 10-scene min
     hard veto: a plan whose risk from collisions in the first VETO["horizon_s"] = 2 s exceeds VETO["risk"] = 0.3
     is not allowed (if every plan is vetoed, the one with the lowest early risk is taken).
     risk     = sum_agents sum_k p_k * 1[overlap at some t] / (1 + t_first), every 0.1 s; footprints from each
-               object's real size (and the ego's): ceil(length / width) circles of radius width / 2 spread over the
-               length (circle_footprint);
+               object's real size (and the ego's): ceil(length / width) circles that fully cover the box,
+               r = sqrt((w/2)^2 + (L/(2n))^2) (circle_footprint);
                agents behind the ego in its lane (rear-end is the follower's job) are ignored.
     progress = distance along the route at 6 s up to the end of the logged route, minus any distance past it
                (the logged route ends where the expert stopped, so the plan should stop there too);  comfort = mean(|a|^2) + mean(|jerk|^2) of the plan rollout.
@@ -144,13 +144,14 @@ class WorldModelPredictor:
 
 
 def circle_footprint(length, width):
-    """Circles covering a length x width box along its length: n = ceil(length / width) circles of radius width / 2,
-    centres evenly spaced from -(length / 2 - r) to +(length / 2 - r). Returns (offsets (n,), radius)."""
+    """n = ceil(length / width) circles that fully cover a length x width box: the box is cut into n equal slices
+    along its length, each slice gets the circle through its 4 corners, r = sqrt((w / 2)^2 + (L / (2n))^2), centred
+    at the slice centre. Returns (offsets (n,) along the length, radius)."""
     width = max(float(width), 0.1)
-    length = max(float(length), width)
-    r = width / 2
+    length = max(float(length), 0.1)
     n = max(1, int(np.ceil(length / width - 1e-9)))
-    return (np.linspace(-(length / 2 - r), length / 2 - r, n) if n > 1 else np.zeros(1)), r
+    r = float(np.hypot(width / 2, length / (2 * n)))
+    return -length / 2 + length / (2 * n) + np.arange(n) * length / n, r
 
 
 def collision_risk(dense_plans, paths, probs, current, yaw, sizes, ego_size, device, chunk=32):
