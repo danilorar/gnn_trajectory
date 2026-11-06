@@ -81,7 +81,7 @@ def near_ego_agents(batch, slots, radius=10.0):
 AGENT_GROUPS = ("all_agents", "moving_agents", "near_ego_agents")
 
 
-def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
+def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0, eval_slots=None):
     """Val/test metrics of a v2 model as a dict.
 
     Target: minADE6 / minFDE6 (same metric code as v1), miss_rate_2m = share with minFDE6 > 2 m,
@@ -89,7 +89,8 @@ def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
     Multi-agent models add the same over all predicted agents with >= 6 valid future steps (all_agents_*)
     and over the moving ones only (moving_agents_*, > 1 m from the current position in history or future):
     ADE over valid steps, FDE at the last valid step. With an ego-plan model also near_ego_agents_* (predicted
-    agents within 10 m of the ego at the same future step). plan: forwarded to the model (on/off)."""
+    agents within 10 m of the ego at the same future step). plan: forwarded to the model (on/off).
+    eval_slots: agent metrics only over the first N predicted slots (compare models with different --predict-agents)."""
     model.eval()
     sums, wins = {}, None
 
@@ -102,6 +103,9 @@ def evaluate_v2(model, loader, device, plan=None, miss_threshold=2.0):
             traj, logits = model(batch, plan=plan) if model.ego_plan else model(batch)
             if traj.ndim == 5:                       # multi-agent: (B, M, K, F, 2), target at index 0
                 future, valid, include = model.agent_targets(batch)
+                if eval_slots:
+                    include = include.clone()
+                    include[:, eval_slots:] = False
                 moving = include & moving_agents(batch, model.slots)
                 a_ade, a_fde = agent_min_errors(traj, future, valid)
                 top = logits.argmax(-1)[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:])
@@ -184,9 +188,11 @@ def run_v2(args, seed, device, checkpoint):
     plans = (("plan on", True), ("plan off", False)) if args.ego_plan else (("", None),)
 
     def evaluate_all(loader_):
-        return {label or "default": evaluate_v2(model, loader_, device, plan) for label, plan in plans}
+        return {label or "default": evaluate_v2(model, loader_, device, plan, eval_slots=args.eval_slots)
+                for label, plan in plans}
 
-    val_loader, test_loader = loader("val", False), loader("test", False)
+    val_loader = loader("val", False)
+    test_loader = loader("test", False) if args.eval_test else None
     val_metrics = []
     stopped_epoch = None
 
@@ -247,10 +253,11 @@ def run_v2(args, seed, device, checkpoint):
 
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True), strict=True)
     validation = evaluate_all(val_loader)
-    # Test is evaluated once, on the best-val checkpoint, only after training (settings are chosen on val).
-    testing = evaluate_all(test_loader)
+    # Test only with --eval-test: once, on the best-val checkpoint, for the final evaluation (settings are chosen on val).
+    testing = evaluate_all(test_loader) if test_loader is not None else None
     if not args.ego_plan:                                     # keep the old flat manifest layout
-        validation, testing = validation["default"], testing["default"]
+        validation = validation["default"]
+        testing = testing and testing["default"]
 
     if not args.evaluate_only:
         save_run_manifest(
@@ -268,6 +275,8 @@ def run_v2(args, seed, device, checkpoint):
         )
     print("Final results | model=v2 | seed=%d" % seed)
     for label, m in (("Validation", validation), ("Test", testing)):
+        if m is None:
+            continue
         for sub, mm in (m.items() if args.ego_plan else (("", m),)):
             print(f"{label}{' ' + sub if sub else ''}: {format_v2(mm)}")
     print(f"Checkpoint: {checkpoint}")
@@ -287,6 +296,10 @@ def main():
     parser.add_argument("--checkpoint-dir", type=Path, default=PROJECT_ROOT / "checkpoints")
     parser.add_argument("--evaluate-only", action="store_true", help="Load weights without training or saving them")
     parser.add_argument("--checkpoint", type=Path, help="Existing weights for --evaluate-only")
+    parser.add_argument("--eval-test", action="store_true",
+                        help="Also score the test split (off by default: final evaluation / reproducibility checks only)")
+    parser.add_argument("--eval-slots", type=int,
+                        help="v2 multi-agent: agent metrics over the first N predicted slots only (e.g. 16)")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output", type=Path, help="Optional new JSON evaluation summary")
     parser.add_argument(
@@ -323,6 +336,8 @@ def main():
         parser.error("--epochs and --batch-size must be positive")
     if not np.isfinite(args.lr) or args.lr <= 0:
         parser.error("--lr must be finite and positive")
+    if args.eval_slots and not args.evaluate_only:
+        parser.error("--eval-slots requires --evaluate-only")
     if args.checkpoint and not args.evaluate_only:
         parser.error("--checkpoint requires --evaluate-only")
     if args.output and args.output.exists():
@@ -353,7 +368,7 @@ def main():
     if not args.evaluate_only:
         train_graphs = load_graphs("train", use_map)
     val_graphs = load_graphs("val", use_map)
-    test_graphs = load_graphs("test", use_map)
+    test_graphs = load_graphs("test", use_map) if args.eval_test else None
 
     # All five models use the same graph features and fixed 35 m datasets.
     if args.model == "target_mlp":
@@ -386,7 +401,7 @@ def main():
             generator=torch.Generator().manual_seed(seed),
         )
     val_loader = DataLoader(val_graphs, batch_size=args.batch_size, shuffle=False)
-    test_loader = DataLoader(test_graphs, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(test_graphs, batch_size=args.batch_size, shuffle=False) if args.eval_test else None
 
     if not args.evaluate_only:
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -409,9 +424,11 @@ def main():
         strict=True,
     )
     val_ade, val_fde = evaluator(model, val_loader, device)
-    test_ade, test_fde = evaluator(model, test_loader, device)
     validation = {metric_names[0]: float(val_ade), metric_names[1]: float(val_fde)}
-    testing = {metric_names[0]: float(test_ade), metric_names[1]: float(test_fde)}
+    testing = None
+    if test_loader is not None:
+        test_ade, test_fde = evaluator(model, test_loader, device)
+        testing = {metric_names[0]: float(test_ade), metric_names[1]: float(test_fde)}
 
     if not args.evaluate_only:
         save_run_manifest(
@@ -434,6 +451,8 @@ def main():
 
     print(f"Final results | model={args.model} | seed={seed}")
     for label, metrics in (("Validation", validation), ("Test", testing)):
+        if metrics is None:
+            continue
         print(
             f"{label}: {metric_names[0]}: {metrics[metric_names[0]]:.6f} m | "
             f"{metric_names[1]}: {metrics[metric_names[1]]:.6f} m"
