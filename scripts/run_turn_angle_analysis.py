@@ -7,6 +7,8 @@ v2 only (pass --dataset .../nuscenes_val_...pkl):
   --examples PNG     grid of example predictions, 2 per turn bin
   --follower-test D  does the ego plan reach a car following the ego? (real / braking / accelerating plan)
   --cv-baseline      constant-velocity baseline vs the model (target, moving agents, near-ego agents)
+  --all-slots        with --cv-baseline: predict every agent slot (not only the trained 16) and compare
+                     slots 17+ with constant velocity
   --timing           forward-pass time for one scene with --plans different ego plans in one batch
 """
 
@@ -90,6 +92,8 @@ def main():
     parser.add_argument("--followers", type=int, default=20, help="number of scenes for --follower-test")
     parser.add_argument("--cv-baseline", type=Path, metavar="JSON",
                         help="v2 multi-agent model: constant-velocity baseline vs the model, saved to JSON, then exit")
+    parser.add_argument("--all-slots", action="store_true",
+                        help="with --cv-baseline: predict all 63 agent slots; report slots 17+ vs constant velocity")
     parser.add_argument("--timing", action="store_true",
                         help="v2 ego-plan model: time one forward pass with one scene x --plans ego plans, then exit")
     parser.add_argument("--plans", type=int, default=50)
@@ -138,7 +142,9 @@ def main():
             parser.error("--follower-test / --cv-baseline support --model v2 only")
         if args.follower_test:
             follower_test(args, device, load_v2(args.checkpoint, device))
-        if args.cv_baseline:
+        if args.cv_baseline and args.all_slots:
+            slot_coverage(args, device, load_v2(args.checkpoint, device))
+        elif args.cv_baseline:
             cv_baseline(args, device, load_v2(args.checkpoint, device))
         return
     if args.examples:
@@ -625,6 +631,55 @@ def timing(args, device, model, index=0, warmup=5, runs=20):
         print(f"batch {n:3d} (1 scene x {n} ego plans) on {device}: median {np.median(times):.2f} ms "
               f"(min {np.min(times):.2f}, max {np.max(times):.2f}) over {runs} runs | output {tuple(traj.shape)}"
               + (f" | target prediction spread across plans {spread:.2f} m" if n > 1 else ""))
+
+
+def slot_coverage(args, device, model):
+    """Open-loop check before predicting more agents than trained: the decoder is shared across agents, so the
+    model can fill every slot (0, 2..63) at inference. Agents with >= 6 valid future steps, grouped into the
+    trained slots (0, 2..16) and the extra slots (17+), all and moving only; model minADE6 / top-1 vs CV."""
+    from torch.utils.data import DataLoader as TorchLoader
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from train_model import agent_min_errors, moving_agents
+
+    trained = len(model.slots)
+    model.slots = [0] + list(range(2, 64))
+    model.predict_agents = len(model.slots)
+    loader = TorchLoader(v2_val_items(args), batch_size=max(1, args.batch_size // 2), shuffle=False, num_workers=4)
+    sums = {}
+    with torch.no_grad():
+        for batch in loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            traj, logits = model(batch, plan=True)                                          # (B, 63, K, 12, 2)
+            future, valid, include = model.agent_targets(batch)
+            moving = include & moving_agents(batch, model.slots)
+            ade, _ = agent_min_errors(traj, future, valid)
+            top = logits.argmax(-1)[..., None, None, None].expand(-1, -1, 1, *traj.shape[3:])
+            top1, _ = agent_min_errors(traj.gather(2, top), future, valid)
+            hist, hv = batch["agent_hist"][:, model.slots], batch["agent_hist_valid"][:, model.slots]
+            T = hist.shape[2]
+            last = (hv * torch.arange(1, T + 1, device=device)).argmax(-1)
+            state = hist.gather(2, last[..., None, None].expand(-1, -1, 1, hist.shape[-1]))[:, :, 0]
+            t = 0.5 * ((T - 1 - last)[..., None] + torch.arange(1, 13, device=device))
+            cv = state[..., None, :2] + t[..., None] * state[..., None, 4:6]
+            cv_ade, _ = agent_min_errors(cv[:, :, None], future, valid)
+            extra = torch.zeros_like(include)
+            extra[:, trained:] = True
+            for name, mask in (("trained slots, all", include & ~extra), ("trained slots, moving", moving & ~extra),
+                               ("slots 17+, all", include & extra), ("slots 17+, moving", moving & extra)):
+                acc = sums.setdefault(name, [0.0, 0.0, 0.0, 0])
+                acc[0] += ade[mask].sum().item()
+                acc[1] += top1[mask].sum().item()
+                acc[2] += cv_ade[mask].sum().item()
+                acc[3] += int(mask.sum().item())
+    print(f" group                  |      n | model minADE6 | model top-1 ADE | CV ADE | top-1 vs CV")
+    result = {}
+    for name, (a, t1, c, n) in sums.items():
+        result[name] = dict(n=n, minADE6=a / n, top1_ADE=t1 / n, cv_ADE=c / n)
+        print(f" {name:22s} | {n:6d} | {a / n:13.3f} | {t1 / n:15.3f} | {c / n:6.3f} | {t1 / c - 1:+.0%}")
+    args.cv_baseline.parent.mkdir(parents=True, exist_ok=True)
+    args.cv_baseline.write_text(json.dumps({"checkpoint": str(args.checkpoint), "dataset": str(args.dataset),
+                                            "trained_slots": trained, "results": result}, indent=2) + "\n")
+    print(f"saved {args.cv_baseline}")
 
 
 if __name__ == "__main__":
