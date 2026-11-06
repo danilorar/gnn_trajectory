@@ -4,12 +4,14 @@
     .venv_sim/bin/python scripts/sim_check.py convert     # 5 nuScenes v1.0-mini scenes -> sim/scenarios/nuscenes_mini5
     .venv_sim/bin/python scripts/sim_check.py replay      # replay one scene, top-down PNG + GIF -> outputs/sim/
     .venv_sim/bin/python scripts/sim_check.py drive       # ego on a constant command, others replay the log
+    .venv_sim/bin/python scripts/sim_check.py match       # adapter (sim -> v2 tensors) vs the processed dataset
 
 nuScenes mini lives in data/nuscenes_mini (v1.0-mini tables only; maps -> data/maps).
 """
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +147,162 @@ def drive(index, seconds, throttle, steering):
         env.close()
 
 
+def match(scene_name, checkpoint, sample_limit):
+    """Adapter match test on one mini scene that is also in the processed v2 dataset.
+
+    For every processed sample of the scene: rebuild it from the ScenarioNet scenario with sim/adapter.py
+    (history buffer at 10 Hz, keyframe = every 5th step) and compare agents, ego, lane segments, edges, and
+    the model's predictions on both inputs. Then repeat one sample through a live MetaDrive replay
+    (snapshot_from_env), whose map frame is shifted, to check the result does not depend on the sim frame."""
+    import json
+    import pickle
+    import numpy as np
+    import torch
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from sim.adapter import (HistoryBuffer, add_connector_polygons, build_sample, snapshot_from_env,
+                             snapshot_from_scenario, to_model_inputs)
+    from utils.dataset_v2 import TrajectoryDatasetV2
+    from utils.models_v2 import V2Predictor
+
+    scenes = {s["name"]: s for s in json.loads((MINI_ROOT / "v1.0-mini/scene.json").read_text())}
+    samples = {s["token"]: s for s in json.loads((MINI_ROOT / "v1.0-mini/sample.json").read_text())}
+    keyframe, tok = {}, scenes[scene_name]["first_sample_token"]
+    while tok:
+        keyframe[tok] = len(keyframe)
+        tok = samples[tok]["next"]
+    scen_file = next((SCENARIO_DIR).rglob(f"*{scene_name}.pkl"))
+    scenario = pickle.loads(scen_file.read_bytes())
+
+    split = None
+    for name in ("train", "val", "test"):
+        data = pickle.loads((PROJECT_ROOT / f"data/processed_v2/nuscenes_{name}_prediction_samples_map.pkl").read_bytes())
+        idx = [i for i, s in enumerate(data) if s["scene_token"] == scenes[scene_name]["token"]]
+        if idx:
+            split = name
+            break
+    print(f"{scene_name}: {len(idx)} processed samples in the {split} split, {len(keyframe)} keyframes, "
+          f"scenario {scenario['length']} steps")
+    idx = idx[:sample_limit] if sample_limit else idx
+
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    manifest = json.loads(Path(checkpoint).with_suffix(".json").read_text())
+    model = V2Predictor(state["decoder.anchors"].numpy(), predict_agents=manifest.get("predict_agents", 1),
+                        ego_plan=manifest.get("ego_plan", False), target_split=manifest.get("target_split", False),
+                        plan_queries=manifest.get("plan_queries", False)).eval()
+    model.load_state_dict(state)
+    ds = TrajectoryDatasetV2.__new__(TrajectoryDatasetV2)
+    ds.samples, ds.max_agents, ds.max_lanes, ds.max_points = data, 64, 192, 21
+
+    def predict(item):
+        with torch.no_grad():
+            traj, logits = model({k: v[None] for k, v in item.items()}, plan=True)
+        return traj[0].numpy(), logits[0].softmax(-1).numpy()
+
+    def compare(ref, new, ref_item, new_item):
+        out = {}
+        ids_ref, ids_new = list(ref["agent_instance_tokens"]), list(new["agent_instance_tokens"])
+        out["agents"] = (len(ids_ref), len(ids_new), len(set(ids_ref) ^ set(ids_new)))
+        common = [t for t in ids_ref if t in ids_new]
+        a = [ids_ref.index(t) for t in common]
+        b = [ids_new.index(t) for t in common]
+        vr, vn = ref["agent_past_valid"][a], new["agent_past_valid"][b]
+        out["valid_mismatch"] = int((vr != vn).sum())
+        both = vr & vn
+        out["past_err"] = float(np.abs(ref["agent_past"][a][both] - new["agent_past"][b][both]).max()) if both.any() else 0.0
+        out["size_err"] = float(np.abs(ref["agent_size"][a] - new["agent_size"][b]).max())
+        out["ego_past_err"] = float(np.abs(ref["ego_past"] - new["ego_past"]).max())
+        out["ego_future_err"] = float(np.abs(ref["ego_future"] - new["ego_future"]).max())
+        # lane segments as sets (the model does not depend on token order): same length, points within 1 cm
+        pairs = {}
+        for a_i, pa in enumerate(ref["lane_points"]):
+            for b_i, pb in enumerate(new["lane_points"]):
+                if b_i not in pairs.values() and len(pa) == len(pb) and np.abs(pa - pb).max() < 1e-2:
+                    pairs[a_i] = b_i
+                    break
+        out["lanes"] = (len(ref["lane_points"]), len(new["lane_points"]), len(pairs))
+        out["lane_err"] = max((float(np.abs(ref["lane_points"][a_] - new["lane_points"][b_]).max())
+                               for a_, b_ in pairs.items()), default=0.0)
+        out["conn_mismatch"] = int(sum(ref["lane_is_connector"][a_] != new["lane_is_connector"][b_]
+                                       for a_, b_ in pairs.items()))
+        inv = {b_: a_ for a_, b_ in pairs.items()}
+        er = {(int(i), int(j)) for i, j in ref["lane_edges"] if i in pairs and j in pairs}
+        en = {(inv[i], inv[j]) for i, j in new["lane_edges"] if i in inv and j in inv}
+        out["edges"] = (len(er), len(en), len(er ^ en))
+        tr, pr = predict(ref_item)
+        tn, pn = predict(new_item)
+        out["pred_err"] = float(np.abs(tr[0] - tn[0]).max())           # target, all modes, metres
+        out["prob_err"] = float(np.abs(pr[0] - pn[0]).max())
+        return out
+
+    def ego_plan(k):
+        sdc = scenario["tracks"][scenario["metadata"]["sdc_id"]]["state"]
+        steps = [STRIDE_ * (k + j) for j in range(1, 13)]
+        plan = np.array([[*sdc["position"][s][:2], sdc["heading"][s]] if s < len(sdc["valid"]) else [0, 0, 0]
+                         for s in steps])
+        return plan, np.array([s < len(sdc["valid"]) and bool(sdc["valid"][s]) for s in steps])
+
+    STRIDE_ = 5
+    features = add_connector_polygons(scenario["map_features"], scenario["metadata"]["map"])
+    rows = []
+    for i in idx:
+        ref = data[i]
+        k = keyframe[ref["sample_token"]]
+        buf = HistoryBuffer()
+        for step in range(max(0, STRIDE_ * k - 20), STRIDE_ * k + 1):
+            buf.push(snapshot_from_scenario(scenario, step))
+        plan, plan_valid = ego_plan(k)
+        new = build_sample(buf, features, ref["target_instance_token"], plan, plan_valid)
+        rows.append((i, k, compare(ref, new, ds[i], to_model_inputs(new))))
+
+    print(" sample  key | agents ref/new/diff | valid mism | past err | size err | ego past/fut err |"
+          " lanes ref/new/shared | lane err | edges ref/new/diff | pred err [m] | prob err")
+    for i, k, r in rows:
+        print(f" {i:6d} {k:4d} | {r['agents'][0]:3d} {r['agents'][1]:3d} {r['agents'][2]:3d}      | {r['valid_mismatch']:10d} |"
+              f" {r['past_err']:.1e}  | {r['size_err']:.1e}  | {r['ego_past_err']:.1e} {r['ego_future_err']:.1e}  |"
+              f" {r['lanes'][0]:4d} {r['lanes'][1]:4d} {r['lanes'][2]:4d}       | {r['lane_err']:.1e}  |"
+              f" {r['edges'][0]:4d} {r['edges'][1]:4d} {r['edges'][2]:3d}    | {r['pred_err']:.2e}    | {r['prob_err']:.1e}")
+    worst = max(r["pred_err"] for _, _, r in rows)
+    print(f"max target prediction difference over {len(rows)} samples: {worst:.2e} m | connector-flag mismatches "
+          f"{sum(r['conn_mismatch'] for _, _, r in rows)} | agent-set differences {sum(r['agents'][2] for _, _, r in rows)} | "
+          f"lane segments unmatched {sum(r['lanes'][0] + r['lanes'][1] - 2 * r['lanes'][2] for _, _, r in rows)} | "
+          f"edge differences {sum(r['edges'][2] for _, _, r in rows)}")
+
+    # Same sample through a live MetaDrive replay (shifted sim frame, snapshot_from_env)
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    from metadrive.envs.scenario_env import ScenarioEnv
+    from metadrive.policy.replay_policy import ReplayEgoCarPolicy
+    from metadrive.scenario.utils import get_number_of_scenarios
+    n = get_number_of_scenarios(str(SCENARIO_DIR))
+    i, k, _ = rows[len(rows) // 2]
+    env = ScenarioEnv(dict(use_render=False, agent_policy=ReplayEgoCarPolicy, num_scenarios=n,
+                           data_directory=str(SCENARIO_DIR), log_level=50))
+    try:
+        for index in range(n):
+            env.reset(seed=index)
+            if env.engine.data_manager.current_scenario["metadata"]["scenario_id"] == scene_name:
+                break
+        sim_scen = env.engine.data_manager.current_scenario
+        buf = HistoryBuffer()
+        buf.push(snapshot_from_env(env))
+        for _ in range(STRIDE_ * k):
+            env.step([0, 0])
+            buf.push(snapshot_from_env(env))
+        sdc = sim_scen["tracks"][sim_scen["metadata"]["sdc_id"]]["state"]
+        steps = [STRIDE_ * (k + j) for j in range(1, 13)]
+        plan = np.array([[*sdc["position"][s][:2], sdc["heading"][s]] for s in steps])
+        live_features = add_connector_polygons(sim_scen["map_features"], sim_scen["metadata"]["map"])
+        live = build_sample(buf, live_features, data[i]["target_instance_token"], plan)
+        r = compare(data[i], live, ds[i], to_model_inputs(live))
+        shift = np.asarray(scenario["tracks"][scenario["metadata"]["sdc_id"]]["state"]["position"][0][:2]) - \
+            np.asarray(sdc["position"][0][:2])
+        print(f"live MetaDrive replay, sample {i} (keyframe {k}, step {env.episode_step}), sim frame shifted by "
+              f"{shift.round(1)} m: agents {r['agents']}, past err {r['past_err']:.1e}, ego past err "
+              f"{r['ego_past_err']:.1e}, lanes {r['lanes']}, edges diff {r['edges'][2]}, "
+              f"pred err {r['pred_err']:.2e} m")
+    finally:
+        env.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
@@ -158,11 +316,17 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("match")
+    p.add_argument("--scene", default="scene-0061")
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d/v2_seed42_best.pth"))
+    p.add_argument("--limit", type=int, default=0, help="only the first N samples (0 = all)")
     args = parser.parse_args()
     if args.step == "metadrive":
         check_metadrive(args.steps)
     elif args.step == "convert":
         convert(args.scenes)
+    elif args.step == "match":
+        match(args.scene, args.checkpoint, args.limit)
     elif args.step == "drive":
         drive(args.index, args.seconds, args.throttle, args.steering)
     else:

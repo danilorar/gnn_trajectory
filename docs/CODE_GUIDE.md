@@ -139,8 +139,17 @@ Note: the 60°+ bin also contains reversing agents (endpoint behind the target).
 ### `scripts/check_lane_tokens.py`
 Builds the lane tokens of one sample directly from the map and plots segments, direction arrows and edges.
 
+### `sim/adapter.py` (Phase D: simulator -> model inputs)
+`HistoryBuffer` keeps the last 2 s of sim snapshots (10 Hz); `snapshot_from_scenario` (log) and `snapshot_from_env`
+(log for the others + the live MetaDrive ego) fill it. `build_sample(buffer, map_features, target_id, ego_plan)` rebuilds
+exactly what the dataset builder stores for that target (agents within 35 m, 5 keyframes of history, lanes in the 50 m box
+as 20 m segments + edges, the ego plan as `ego_future`); `to_model_inputs` turns it into the tensors of
+`TrajectoryDatasetV2`. `add_connector_polygons` restores lane-connector polygons (ScenarioNet drops them) from the
+nuScenes map, which the lane selection needs. `sim_check.py match` checks all of this against the processed dataset.
+
 ### `scripts/sim_check.py` (Phase D prep)
-`metadrive` (reset + 20 random steps, no rendering), `convert` (first 5 nuScenes-mini scenes -> ScenarioNet
+`metadrive` (reset + 20 random steps, no rendering), `drive` (constant command for the ego while the others replay),
+`match` (adapter vs processed dataset on one mini scene, plus one live MetaDrive replay), `convert` (first 5 nuScenes-mini scenes -> ScenarioNet
 scenarios in `sim/scenarios/nuscenes_mini5`), `replay` (replays one scene with the logged ego and traffic,
 saves a top-down PNG and GIF to `outputs/sim/`).
 
