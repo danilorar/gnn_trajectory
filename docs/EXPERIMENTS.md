@@ -24,13 +24,13 @@ Checkpoints: `checkpoints/<run>/v2_seed<N>_best.pth` + `.json`; logs: `outputs/t
 | v2_d (d) interrupted | 2026-11-06 | + plan in each agent's frame, plan dropout 0.2 | `... --plan-queries --plan-drop 0.2` | 28 / – (interrupted at ep 31, display freeze) | 1.251 (plan off 1.296; from the log) | World model v1 (used in the mini planner development); rerun below |
 | v2_d_rerun (d) | 2026-11-06 | Rerun of (d) | `--predict-agents 16 --ego-plan --target-split --plan-queries --plan-drop 0.2` | 40 / 55 | 1.243 (plan off 1.281) | Current reference model (follower test: `outputs/run_d_rerun/`) |
 | e32 | 2026-11-06 (pod) | (d) with 32 predicted agents | (d) flags + `--predict-agents 32` | 36 / 51 | 1.222 | Moving top-1 ADE 2.520 (16 shared slots); follower direction ✓ |
-| e63 | 2026-11-06 (pod) | (d) with 63 predicted agents (all slots but ego) | (d) flags + `--predict-agents 63` | 26 / 41 | 1.228 | Moving top-1 ADE 2.606 (16 shared slots); follower test pending |
-| **Model selection** | 2026-11-06 | Val, rule pre-stated (Amendment 1 (2)) | `train_model.py --evaluate-only --eval-slots 16` | – | – | **d_rerun chosen**: best val moving-agent top-1 ADE (2.462 vs e32 2.520, e63 2.606); d_rerun and e32 pass the follower direction check, e63 pending (see Next steps) |
+| e63 | 2026-11-06 (pod) | (d) with 63 predicted agents (all slots but ego) | (d) flags + `--predict-agents 63` | 26 / 41 | 1.228 | Moving top-1 ADE 2.606 (16 shared slots); follower direction ✓ |
+| **Model selection** | 2026-11-06 | Val, rule pre-stated (Amendment 1 (2)) | `train_model.py --evaluate-only --eval-slots 16` | – | – | **d_rerun chosen**: best val moving-agent top-1 ADE (2.462 vs e32 2.520, e63 2.606); all pass the follower direction check |
 
 Notes
-- Follower test (val, 20 scenes, 6 s travel real / brake / accel): d_rerun 30.7 / 25.3 / 36.7 m, e32 29.5 / 23.3 / 35.5 m
-  (`outputs/run_d_rerun/`, `outputs/e32/`). Direction is right, but with brake-to-stop (ego 3.4 m, follower ~12 m behind) both
-  still predict ~23–25 m of travel: the reaction is too weak to be physically plausible.
+- Follower test (val, 20 scenes, 6 s travel real / brake / accel): d_rerun 30.7 / 25.3 / 36.7 m, e32 29.5 / 23.3 / 35.5 m,
+  e63 29.8 / 20.7 / 34.7 m (`outputs/run_d_rerun/`, `outputs/e32/`, `outputs/e63/`). Direction is right, but with brake-to-stop (ego 3.4 m, follower ~12 m behind) all
+  still predict ~21–25 m of travel: the reaction is too weak to be physically plausible.
 - e32 / e63 exist to raise planner coverage: with 16 slots, busy scenes (~22 nearby agents) get only ~68% world-model
   coverage; the rest falls back to constant velocity.
 - "All agents minADE₆" is not comparable across different `--predict-agents` values (different agent sets).
@@ -114,10 +114,7 @@ The chosen checkpoint, the numbers behind the choice, and the date are recorded 
 The pass criterion in step 1 is written out here so that it is fixed. Earlier, the follower test was only read by eye.
 
 ## Next steps (handoff, 2026-11-06)
-1. Run the e63 follower test (it was queued behind a sim GPU job), on val, one GPU job at a time:
-   `.venv/bin/python scripts/run_turn_angle_analysis.py --model v2 --checkpoint checkpoints/v2_e63/v2_seed42_best.pth --follower-test outputs/e63`
-   If brake < real < accel for the follower's 6 s travel, change "e63 pending" to ✓ in the e63 and Model selection
-   rows. If it fails, e63 drops out; the choice (d_rerun) does not change either way.
+1. Done: e63 follower test passed (brake < real < accel); the Model selection row is final.
 2. Record the chosen checkpoint in Amendment 1 (2) before any reactive run (d_rerun, numbers in the Model selection row).
-3. Uncommitted: the new test rule in `CLAUDE.md` (the user decides when to commit it).
+3. Unpushed: local commits on v2-transformer (the user decides when to push).
 4. Open: the follower reaction is too weak (see Notes). Consider this before relying on the WM for followers.
