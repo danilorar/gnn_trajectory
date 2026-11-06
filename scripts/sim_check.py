@@ -5,6 +5,7 @@
     .venv_sim/bin/python scripts/sim_check.py replay      # replay one scene, top-down PNG + GIF -> outputs/sim/
     .venv_sim/bin/python scripts/sim_check.py drive       # ego on a constant command, others replay the log
     .venv_sim/bin/python scripts/sim_check.py match       # adapter (sim -> v2 tensors) vs the processed dataset
+    .venv_sim/bin/python scripts/sim_check.py follow      # plan generator + tracker on the logged route, no predictor
 
 nuScenes mini lives in data/nuscenes_mini (v1.0-mini tables only; maps -> data/maps).
 """
@@ -303,6 +304,99 @@ def match(scene_name, checkpoint, sample_limit):
         env.close()
 
 
+def follow(index, replan_steps=5):
+    """Plan generator + tracker without a predictor: every 0.5 s generate the 35 candidate plans (checked and
+    timed), but always execute "offset 0, speed = logged speed now"; the tracker follows it for 5 sim steps.
+    Others replay the log. Reports the lateral error to the reference route, off-road / crash flags, and saves
+    outputs/sim/follow_test.gif and follow_test.png (driven path vs route, lateral error and speed)."""
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import time
+    import numpy as np
+    from PIL import Image
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from metadrive.envs.scenario_env import ScenarioEnv
+    from metadrive.scenario.utils import get_number_of_scenarios
+    from sim.planner import Tracker, generate_plans, logged_speed, plans_to_ego_future, reference_from_scenario
+
+    n = get_number_of_scenarios(str(SCENARIO_DIR))
+    env = ScenarioEnv(dict(use_render=False, num_scenarios=n, data_directory=str(SCENARIO_DIR), horizon=10_000,
+                           log_level=50, crash_vehicle_done=False, crash_object_done=False, crash_human_done=False))
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        env.reset(seed=index)
+        scenario = env.engine.data_manager.current_scenario
+        ref = reference_from_scenario(scenario)
+        steps = scenario["length"] - 1
+        tracker, frames, log = Tracker(), [], []
+        gen_ms, plan = [], None
+        flags = {"out_of_road": 0, "crash": 0}
+        for step in range(steps):
+            a = env.agent
+            x, y, yaw, v = float(a.position[0]), float(a.position[1]), float(a.heading_theta), float(a.speed)
+            if step % replan_steps == 0:
+                t0 = time.perf_counter()
+                grid, grid_dense, meta = generate_plans(ref, (x, y, yaw, v))
+                gen_ms.append(1000 * (time.perf_counter() - t0))
+                if step == 0:
+                    ego_future = plans_to_ego_future(grid, np.array([x, y]), yaw)
+                    print(f"candidate plans: {len(meta)} = {len(set(m[0] for m in meta))} speeds x "
+                          f"{len(set(m[1] for m in meta))} offsets | sparse {grid.shape}, as ego_future "
+                          f"{ego_future.shape}, dense {grid_dense.shape}")
+                v_log = logged_speed(scenario, step)
+                _, chosen, _ = generate_plans(ref, (x, y, yaw, v), speeds=[v_log], offsets=[0.0])
+                plan, plan_t, tracker = chosen[0], 0.0, tracker
+            act = tracker.action(x, y, yaw, v, plan, plan_t)
+            _, _, _, _, info = env.step(act)
+            plan_t += 0.1
+            s_, d_ = ref.project(np.asarray(env.agent.position))
+            off_road, crash = bool(info.get("out_of_road")), bool(info.get("crash"))
+            flags["out_of_road"] += off_road
+            flags["crash"] += crash
+            log.append((step + 1, *np.asarray(env.agent.position)[:2], env.agent.speed, logged_speed(scenario, step + 1),
+                        s_, d_, off_road, crash))
+            if step % 2 == 0:
+                frame = env.render(mode="topdown", window=False, screen_size=(800, 800), film_size=(3000, 3000),
+                                   scaling=4, draw_target_vehicle_trajectory=True)
+                frames.append(np.swapaxes(np.asarray(frame), 0, 1))
+        L = np.asarray(log, float)
+        lat = np.abs(L[:, 6])
+        print(f"{steps} steps ({steps / 10:.1f} s) | lateral error to route: max {lat.max():.2f} m, mean {lat.mean():.2f} m, "
+              f"p95 {np.percentile(lat, 95):.2f} m | off-road steps {flags['out_of_road']} | crash steps {flags['crash']}")
+        print(f"route progress {L[-1, 5]:.1f} m of {ref.length:.1f} m logged | speed error vs log: mean "
+              f"{np.mean(np.abs(L[:, 3] - L[:, 4])):.2f} m/s | plan generation (35 plans): median {np.median(gen_ms):.1f} ms")
+        for t in range(10, steps + 1, 20):
+            r = L[t - 1]
+            print(f"  t {r[0] / 10:5.1f} s | speed {r[3]:5.2f} (log {r[4]:5.2f}) m/s | lateral {r[6]:+.2f} m | "
+                  f"off-road {bool(r[7])} | crash {bool(r[8])}")
+        imgs = [Image.fromarray(f) for f in frames]
+        imgs[0].save(OUT_DIR / "follow_test.gif", save_all=True, append_images=imgs[1:], duration=100, loop=0)
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(1, 3, figsize=(17, 5))
+        route = ref.xy[ref.s <= ref.length]
+        ax[0].plot(route[:, 0], route[:, 1], color="0.6", lw=6, alpha=0.5, label="reference (logged route)")
+        ax[0].plot(L[:, 1], L[:, 2], color="tab:green", lw=2, label="driven")
+        ax[0].set_aspect("equal")
+        ax[0].legend(loc="lower left", fontsize=8)
+        ax[0].set_title("path")
+        ax[1].plot(L[:, 0] / 10, L[:, 6], color="tab:blue")
+        ax[1].axhline(0, color="0.5", lw=0.8)
+        ax[1].set(xlabel="t [s]", ylabel="lateral error [m]", title=f"lateral error (max {lat.max():.2f} m)")
+        ax[2].plot(L[:, 0] / 10, L[:, 4], color="0.5", label="logged")
+        ax[2].plot(L[:, 0] / 10, L[:, 3], color="tab:green", label="driven")
+        ax[2].set(xlabel="t [s]", ylabel="speed [m/s]", title="speed")
+        ax[2].legend()
+        for a_ in ax:
+            a_.grid(alpha=0.3)
+        fig.suptitle(f"{scenario['metadata']['scenario_id']}: offset 0, speed = logged speed, no predictor")
+        fig.tight_layout()
+        fig.savefig(OUT_DIR / "follow_test.png", dpi=110)
+        print(f"saved {OUT_DIR / 'follow_test.gif'} and {OUT_DIR / 'follow_test.png'}")
+    finally:
+        env.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
@@ -316,6 +410,8 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("follow")
+    p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
     p = sub.add_parser("match")
     p.add_argument("--scene", default="scene-0061")
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d/v2_seed42_best.pth"))
@@ -325,6 +421,8 @@ if __name__ == "__main__":
         check_metadrive(args.steps)
     elif args.step == "convert":
         convert(args.scenes)
+    elif args.step == "follow":
+        follow(args.index)
     elif args.step == "match":
         match(args.scene, args.checkpoint, args.limit)
     elif args.step == "drive":
