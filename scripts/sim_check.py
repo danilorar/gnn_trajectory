@@ -85,10 +85,12 @@ def subset_tables(names, out_root, source=PROJECT_ROOT / "data/v1.0-trainval"):
     return len(scenes)
 
 
-def convert_test(n_scenes, workers):
-    """Official nuScenes val scenes (= the scenes of our test split; never used for training or model
-    selection), minus the mini scenes already used to develop the planner, converted with ScenarioNet into
-    sim/scenarios/nuscenes_test150. The first n_scenes in name order are used."""
+def convert_test(n_scenes, workers, which="test150"):
+    """which="test150": official nuScenes val scenes (= the scenes of our test split; never used for training or
+    model selection), minus the mini scenes already used to develop the planner, into sim/scenarios/nuscenes_test150
+    (the first n_scenes in name order).
+    which="dev100": n_scenes random scenes (seed 0) of our val split (model selection; official nuScenes train
+    scenes), minus the mini scenes, into sim/scenarios/nuscenes_dev100: planner development, never test."""
     import json
     import pickle
     from nuscenes.utils.splits import create_splits_scenes
@@ -102,16 +104,26 @@ def convert_test(n_scenes, workers):
         (PROJECT_ROOT / "data/processed_v2/nuscenes_test_prediction_samples_map.pkl").read_bytes())}
     token_to_name = {r["token"]: r["name"] for r in stream_table(PROJECT_ROOT / "data/v1.0-trainval", "scene")}
     test_names = {token_to_name[t] for t in test_tokens}
-    names = sorted(n for n in splits["val"] if n not in dev)[:n_scenes]
-    print(f"official val scenes: {len(splits['val'])}, minus {len(set(splits['val']) & dev)} mini scenes used in "
-          f"development -> {len(names)} scenes; {sum(n in test_names for n in names)} of them have test-split "
-          f"prediction samples, {sum(n not in test_names for n in names)} have none")
-    root = PROJECT_ROOT / "sim/nuscenes_test150_tables"
+    if which == "dev100":
+        import numpy as np
+        val_tokens = {s["scene_token"] for s in pickle.loads(
+            (PROJECT_ROOT / "data/processed_v2/nuscenes_val_prediction_samples_map.pkl").read_bytes())}
+        pool = sorted(token_to_name[t] for t in val_tokens if token_to_name[t] not in dev)
+        names = sorted(np.random.default_rng(0).choice(pool, min(n_scenes, len(pool)), replace=False).tolist())
+        assert not set(names) & test_names and not set(names) & set(splits["val"])
+        print(f"val-split scenes: {len(val_tokens)}, minus mini -> {len(pool)}; {len(names)} drawn (seed 0); "
+              f"none in the test split or in official nuScenes val")
+    else:
+        names = sorted(n for n in splits["val"] if n not in dev)[:n_scenes]
+        print(f"official val scenes: {len(splits['val'])}, minus {len(set(splits['val']) & dev)} mini scenes used in "
+              f"development -> {len(names)} scenes; {sum(n in test_names for n in names)} of them have test-split "
+              f"prediction samples, {sum(n not in test_names for n in names)} have none")
+    root = PROJECT_ROOT / f"sim/nuscenes_{which}_tables"
     if not (root / "v1.0-trainval/scene.json").exists():
         subset_tables(names, root)
     nusc = NuScenes(version="v1.0-trainval", dataroot=str(root), verbose=False)
     scenes = [s for s in nusc.scene if s["name"] in set(names)]
-    out = PROJECT_ROOT / "sim/scenarios/nuscenes_test150"
+    out = PROJECT_ROOT / f"sim/scenarios/nuscenes_{which}"
     write_to_directory(convert_func=convert_nuscenes_scenario, scenarios=scenes, output_path=str(out),
                        dataset_version="v1.0-trainval", dataset_name="nuscenes", overwrite=True, num_workers=workers,
                        nuscenes=[nusc] * workers, past=[2] * workers, future=[6] * workers,
@@ -613,7 +625,10 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
         d = np.asarray(d, float)
         return float(wilcoxon(d).pvalue) if np.any(d != 0) else 1.0
 
-    lines = ["# Closed-loop test: CV vs WM planner (146 nuScenes val scenes = our test split, minus 4 dev mini scenes)",
+    title = {"nuscenes_test150": "146 nuScenes val scenes = our test split, minus 4 dev mini scenes",
+             "nuscenes_dev100": "100 scenes of our val split (planner development; never test)",
+             "nuscenes_mini": "10 mini dev scenes"}.get(Path(data_dir).name, str(data_dir))
+    lines = [f"# Closed-loop evaluation: CV vs WM planner ({title})",
              "", f"Checkpoint: `{checkpoint}`; weights frozen: col 500, progress 1, comfort 0.1, offset 0.5, veto early "
              "risk > 0.3 within 2 s. Non-reactive agents (log replay).", ""]
     def mean_row(rows, name):
@@ -658,12 +673,12 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
                              f"{f2(c.get('diag_chosen_risk', []))} | {f2(c.get('diag_agent_risk', []))} | "
                              f"{f2(c.get('diag_zero_risk_plans', []))} | {c.get('first_seen_s_before')} | {d} |")
     lines += ["", "Values are for the two planning steps before the collision (earlier / later).", "",
-              "| planner | no safe plan existed | safe plan existed but cost picked a risky one | prediction miss |",
+              "| planner | no safe plan existed | safe plan existed but cost picked a risky one | zero predicted risk |",
               "|---|---|---|---|"]
     for name in ("CV", "WM"):
         lines.append(f"| {name} | {diag_count.get((name, 'no safe plan existed'), 0)} | "
                      f"{diag_count.get((name, 'safe plan existed but cost picked a risky one'), 0)} | "
-                     f"{diag_count.get((name, 'prediction miss'), 0)} |")
+                     f"{diag_count.get((name, 'zero predicted risk'), 0)} |")
     lines.append("")
     lines += ["## Near misses (means over scenes)", "", "| | min distance [m] | min TTC [s] (capped at 5) | "
               "scenes with TTC < 1 s | share of steps with distance < 1 m |", "|---|---|---|---|---|"]
@@ -703,6 +718,13 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
                          f"{np.mean([m['not_at_fault'] for m in r]):.3f} | {np.mean([m['offroad_steps'] > 0 for m in r]):.1%} | "
                          f"{np.nanmean([m['progress_ratio'] for m in r]):.3f} |")
     cov = {n_: (sum(m["nearby_wm"] for m in r), sum(m["nearby_agents"] for m in r)) for n_, r in (("CV", cv), ("WM", wm))}
+    lines += ["", "## Ego tracking error (driven vs planned position at the same time)", "",
+              "| planner | mean [m] | p95 [m] | max [m] | lateral p95 [m] |", "|---|---|---|---|---|"]
+    for name, rows in (("CV", cv), ("WM", wm)):
+        lines.append(f"| {name} | {np.mean([m['track_err_mean_m'] for m in rows]):.2f} | "
+                     f"{np.mean([m['track_err_p95_m'] for m in rows]):.2f} | {np.max([m['track_err_max_m'] for m in rows]):.2f} | "
+                     f"{np.mean([m['track_lat_p95_m'] for m in rows]):.2f} |")
+    lines += ["", "Means over scenes of the per-scene mean / p95; max = over all scenes.", ""]
     lines += ["", "## Coverage and timing", "",
               f"- WM coverage (vehicles / pedestrians within 30 m, all planning steps): WM planner {cov['WM'][0]}/{cov['WM'][1]}"
               f" = {cov['WM'][0] / max(cov['WM'][1], 1):.0%}; shadow WM during the CV runs {cov['CV'][0] / max(cov['CV'][1], 1):.0%}",
@@ -778,8 +800,9 @@ if __name__ == "__main__":
     sub.add_parser("metadrive").add_argument("--steps", type=int, default=20)
     p = sub.add_parser("convert")
     p.add_argument("--scenes", type=int, default=5)
-    p.add_argument("--set", choices=("mini", "test150"), default="mini",
-                   help="mini: data/nuscenes_mini; test150: official val scenes minus the dev mini scenes")
+    p.add_argument("--set", choices=("mini", "test150", "dev100"), default="mini",
+                   help="mini: data/nuscenes_mini; test150: official val scenes minus the dev mini scenes; "
+                        "dev100: 100 scenes of our val split (planner development)")
     p.add_argument("--workers", type=int, default=4)
     p = sub.add_parser("replay")
     p.add_argument("--index", type=int, default=0)
@@ -815,7 +838,7 @@ if __name__ == "__main__":
     if args.step == "metadrive":
         check_metadrive(args.steps)
     elif args.step == "convert":
-        convert_test(args.scenes, args.workers) if args.set == "test150" else convert(args.scenes)
+        convert_test(args.scenes, args.workers, args.set) if args.set in ("test150", "dev100") else convert(args.scenes)
     elif args.step == "plan":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
              args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive,

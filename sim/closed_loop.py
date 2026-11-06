@@ -13,8 +13,9 @@ Cost per plan (lowest wins), weights FROZEN on 2026-11-06 after the 10-scene min
     col * risk + progress_w * (-progress) + comfort_w * comfort + offset_w * offset^2
     hard veto: a plan whose risk from collisions in the first VETO["horizon_s"] = 2 s exceeds VETO["risk"] = 0.3
     is not allowed (if every plan is vetoed, the one with the lowest early risk is taken).
-    risk     = sum_agents sum_k p_k * 1[overlap at some t] / (1 + t_first), footprints of 3 circles (r = 1 m)
-               along vehicles (1 circle r = 0.5 m for pedestrians / small objects), every 0.1 s;
+    risk     = sum_agents sum_k p_k * 1[overlap at some t] / (1 + t_first), every 0.1 s; footprints from each
+               object's real size (and the ego's): ceil(length / width) circles of radius width / 2 spread over the
+               length (circle_footprint);
                agents behind the ego in its lane (rear-end is the follower's job) are ignored.
     progress = distance along the route at 6 s up to the end of the logged route, minus any distance past it
                (the logged route ends where the expert stopped, so the plan should stop there too);  comfort = mean(|a|^2) + mean(|jerk|^2) of the plan rollout.
@@ -142,13 +143,23 @@ class WorldModelPredictor:
         return out_paths, out_probs, ids
 
 
-def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, ego_size, device, chunk=32):
+def circle_footprint(length, width):
+    """Circles covering a length x width box along its length: n = ceil(length / width) circles of radius width / 2,
+    centres evenly spaced from -(length / 2 - r) to +(length / 2 - r). Returns (offsets (n,), radius)."""
+    width = max(float(width), 0.1)
+    length = max(float(length), width)
+    r = width / 2
+    n = max(1, int(np.ceil(length / width - 1e-9)))
+    return (np.linspace(-(length / 2 - r), length / 2 - r, n) if n > 1 else np.zeros(1)), r
+
+
+def collision_risk(dense_plans, paths, probs, current, yaw, sizes, ego_size, device, chunk=32):
     """Vectorised (torch) collision risk per plan.
 
     dense_plans (P, 61, 4) ego (x, y, yaw, v) every 0.1 s; paths (P, A, K, 12, 2) at 0.5 ... 6 s; probs (P, A, K);
-    current (A, 2) and yaw (A,) now; sizes (A, 2) (width, length); is_vehicle (A,).
-    Footprints: 3 circles (r = 1 m) along vehicles, 1 circle (r = 0.5 m) otherwise; agent headings from the
-    predicted motion, or the current heading while (nearly) standing still.
+    current (A, 2) and yaw (A,) now; sizes (A, 2) (width, length).
+    Footprints: circle_footprint() of each object's real size and of the ego; agent headings from the predicted
+    motion, or the current heading while (nearly) standing still.
     Returns risk (P,) = sum_a sum_k p_k / (1 + t_first), early (P,) = the same counting only t_first <= 2 s,
     and per_agent (P, A) = each agent's share of risk."""
     import torch
@@ -160,8 +171,9 @@ def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, e
         return risk.cpu().numpy(), early.cpu().numpy(), per_agent.cpu().numpy()
     plan = torch.as_tensor(dense_plans, **f32)
     ed = torch.stack([torch.cos(plan[..., 2]), torch.sin(plan[..., 2])], -1)              # (P, 61, 2)
-    e_off = torch.tensor([-1.0, 0.0, 1.0], **f32) * max(ego_size[1] / 2 - 1.0, 0.0)
-    ego_c = plan[..., None, :2] + e_off[:, None] * ed[..., None, :]                         # (P, 61, 3, 2)
+    e_off_np, ego_r = circle_footprint(ego_size[1], ego_size[0])
+    e_off = torch.as_tensor(e_off_np, **f32)
+    ego_c = plan[..., None, :2] + e_off[:, None] * ed[..., None, :]                         # (P, 61, Ce, 2)
     t_in = torch.arange(13, **f32) * 0.5
     t_out = torch.arange(61, **f32) * DT
     i0 = torch.clamp(torch.searchsorted(t_in, t_out, right=True) - 1, 0, 11)
@@ -177,14 +189,19 @@ def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, e
         moving = step.norm(dim=-1) > 0.02                                                  # > 0.2 m/s
         head = torch.where(moving, torch.atan2(step[..., 1], step[..., 0]),
                            torch.as_tensor(yaw[sl], **f32)[None, :, None, None])
-        veh = torch.as_tensor(is_vehicle[sl], device=device)
-        half = torch.as_tensor(sizes[sl, 1], **f32) / 2
-        a_off = torch.where(veh, torch.clamp(half - 1.0, min=0.0), torch.zeros_like(half))     # (a,)
-        a_off = a_off[:, None] * torch.tensor([-1.0, 0.0, 1.0], **f32)                         # (a, 3)
+        fps = [circle_footprint(l_, w_) for w_, l_ in sizes[sl]]
+        C = max(len(o) for o, _ in fps)
+        offs = np.zeros((len(fps), C))
+        valid = np.zeros((len(fps), C), bool)
+        for j, (o, _) in enumerate(fps):
+            offs[j, :len(o)], valid[j, :len(o)] = o, True
+        a_off = torch.as_tensor(offs, **f32)                                                 # (a, C)
+        a_valid = torch.as_tensor(valid, device=device)
+        r = torch.as_tensor([rad for _, rad in fps], **f32) + ego_r                          # (a,)
         ad = torch.stack([torch.cos(head), torch.sin(head)], -1)                             # (P, a, K, 61, 2)
-        ag_c = dense[..., None, :] + a_off[None, :, None, None, :, None] * ad[..., None, :]  # (P, a, K, 61, 3, 2)
-        r = torch.where(veh, 1.0, 0.5).to(torch.float32) + 1.0                               # ego r = 1 m
-        d = (ego_c[:, None, None, :, :, None, :] - ag_c[..., None, :, :]).norm(dim=-1)       # (P, a, K, 61, 3, 3)
+        ag_c = dense[..., None, :] + a_off[None, :, None, None, :, None] * ad[..., None, :]  # (P, a, K, 61, C, 2)
+        d = (ego_c[:, None, None, :, :, None, :] - ag_c[..., None, :, :]).norm(dim=-1)       # (P, a, K, 61, Ce, C)
+        d = d.masked_fill(~a_valid[None, :, None, None, None, :], float("inf"))
         hit = d.amin(dim=(-1, -2)) < r[None, :, None, None]                                  # (P, a, K, 61)
         any_hit = hit.any(-1)
         t_first = torch.where(any_hit, times[hit.float().argmax(-1)], torch.full_like(any_hit, 1e9, dtype=torch.float32))
@@ -215,8 +232,7 @@ def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weigh
         st = [by_id[i] for i in kid]
         risk, early, per_agent = collision_risk(
             dense_plans, paths[:, keep], probs[:, keep], np.array([q[:2] for q in st]), np.array([q[2] for q in st]),
-            np.array([q[4:6] for q in st]), np.array([q[6].startswith(VEHICLE_TYPES) or q[6] in ("VEHICLE", "CYCLIST")
-                                                      for q in st]), ego_size, device)
+            np.array([q[4:6] for q in st]), ego_size, device)
         agent_risk = {i: per_agent[:, a] for a, i in enumerate(kid)}
 
     s_now = min(ref.project(np.array(scene.ego[:2]))[0], ref.length)
@@ -275,16 +291,16 @@ def collisions(ego_pose, ego_size, snapshot, ego_speed=None):
 def near_miss(ego_pose, ego_vel, ego_size, snapshot, old_snapshot, radius=30.0, horizon=5.0):
     """Per step: min box-to-box distance to any agent (vehicles / pedestrians / cyclists) and min time to
     collision. TTC: ego and agents move on at their current velocity (agents: from the log 0.5 s apart) with
-    the planner's footprints (3 circles r = 1 m along vehicles, 1 circle r = 0.5 m otherwise), first overlap
-    within `horizon` s; agents behind the ego in its lane are skipped (rear-end is the follower's job)."""
+    the planner's footprints (circle_footprint of the real sizes), first overlap within `horizon` s; agents behind
+    the ego in its lane are skipped (rear-end is the follower's job)."""
     ex, ey, eyaw = ego_pose
     eb = box(ex, ey, eyaw, ego_size[1], ego_size[0])
     c, s_ = np.cos(eyaw), np.sin(eyaw)
     min_d, ttc = np.inf, np.inf
     t = np.arange(0, horizon + 1e-9, DT)
     e_dir = np.array([c, s_])
-    e_off = np.array([-1.0, 0.0, 1.0]) * max(ego_size[1] / 2 - 1.0, 0.0)
-    ego_c = (np.array([ex, ey]) + ego_vel * t[:, None])[:, None] + e_off[None, :, None] * e_dir   # (T, 3, 2)
+    e_off, e_r = circle_footprint(ego_size[1], ego_size[0])
+    ego_c = (np.array([ex, ey]) + ego_vel * t[:, None])[:, None] + e_off[None, :, None] * e_dir   # (T, Ce, 2)
     for i, st in snapshot.items():
         if i == EGO_ID:
             continue
@@ -299,11 +315,10 @@ def near_miss(ego_pose, ego_vel, ego_size, snapshot, old_snapshot, radius=30.0, 
             continue
         v = np.zeros(2) if (old_snapshot is None or i not in old_snapshot) else \
             (np.array([x, y]) - np.array(old_snapshot[i][:2])) / 0.5
-        veh = cat.startswith("vehicle.")
-        a_off = (np.array([-1.0, 0.0, 1.0]) * max(l_ / 2 - 1.0, 0.0)) if veh else np.zeros(1)
+        a_off, a_r = circle_footprint(l_, w_)
         ag_c = (np.array([x, y]) + v * t[:, None])[:, None] + a_off[None, :, None] * np.array([np.cos(yaw), np.sin(yaw)])
         d = np.linalg.norm(ego_c[:, :, None] - ag_c[:, None], axis=-1).min(axis=(1, 2))           # (T,)
-        hit = np.flatnonzero(d < 1.0 + (1.0 if veh else 0.5))
+        hit = np.flatnonzero(d < e_r + a_r)
         if len(hit):
             ttc = min(ttc, t[hit[0]])
     return min_d, ttc
@@ -328,7 +343,7 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     buffer.push(snapshot_from_env(env))
     steps = scenario["length"] - 1
     poses, speeds, offroad, md_crash, frames, chosen_log, hits, t_plan = [], [], 0, 0, [], [], {}, []
-    pred_log, coverage, viz_frames, t_parts, near_d, near_ttc = [], [], [], [], [], []
+    pred_log, coverage, viz_frames, t_parts, near_d, near_ttc, track_err = [], [], [], [], [], [], []
     plan, plan_t = None, 0.0
     wm = predictor if getattr(predictor, "name", "") == "WM" else shadow
     for step in range(steps):
@@ -374,6 +389,11 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
             act = tracker.action(x, y, yaw, v, plan, plan_t)
         _, _, _, _, info = env.step(act)
         plan_t += DT
+        if not expert:                                   # tracking error: driven vs planned position at the same time
+            j = min(int(round(plan_t / DT)), len(plan) - 1)
+            dxy = np.asarray(env.agent.position[:2]) - plan[j, :2]
+            ph = plan[j, 2]
+            track_err.append((float(np.hypot(*dxy)), float(-np.sin(ph) * dxy[0] + np.cos(ph) * dxy[1])))
         buffer.push(snapshot_from_env(env))
         a = env.agent
         pose = (float(a.position[0]), float(a.position[1]), float(a.heading_theta))
@@ -428,6 +448,10 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         min_dist_m=float(np.min(near_d)) if near_d else float("inf"),
         min_ttc_s=float(np.min(near_ttc)) if near_ttc else float("inf"),           # inf = none within 5 s
         share_dist_below_1m=float(np.mean(np.asarray(near_d) < 1.0)) if near_d else 0.0,
+        track_err_mean_m=float(np.mean([e[0] for e in track_err])) if track_err else 0.0,
+        track_err_p95_m=float(np.percentile([e[0] for e in track_err], 95)) if track_err else 0.0,
+        track_err_max_m=float(np.max([e[0] for e in track_err])) if track_err else 0.0,
+        track_lat_p95_m=float(np.percentile([abs(e[1]) for e in track_err], 95)) if track_err else 0.0,
         ego_size=list(ego_size), trace=np.asarray(poses)[:, :2].round(4).tolist(),
         chosen_index=[(c["speed"], c["offset"]) for c in chosen_log])
     if gif is not None and frames:
@@ -451,7 +475,8 @@ def classify_collision(t, at_fault_rule):
 def diagnose_at_fault(chosen_log, oid, t, last=2):
     """From the cost logs of the last `last` planning steps before the collision (in this order):
     cost picked risky - at some step a zero-risk plan existed but the chosen plan had risk > 0;
-    prediction miss   - else, if the predictor gave this agent zero risk for the chosen plan at every step;
+    zero predicted risk - else, if the risk model gave this agent zero risk for the chosen plan at every step
+                        (the predictor and/or the footprint geometry saw no overlap);
     no safe plan      - else (the risk was seen, and no zero-risk plan existed when it was).
     Also: seconds before the collision at which this agent's risk for the chosen plan first appeared."""
     steps = [c for c in chosen_log if c["t"] < t][-last:]
@@ -466,7 +491,7 @@ def diagnose_at_fault(chosen_log, oid, t, last=2):
     if any(c.get("n_zero_risk", 0) > 0 and c["risk"] > 1e-6 for c in steps):
         out["diagnosis"] = "safe plan existed but cost picked a risky one"
     elif all(a_ < 1e-6 for a_ in agent):
-        out["diagnosis"] = "prediction miss"
+        out["diagnosis"] = "zero predicted risk"
     else:
         out["diagnosis"] = "no safe plan existed"
     return out

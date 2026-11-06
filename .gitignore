@@ -32,3 +32,4 @@ outputs/
 /sim/scenarionet/
 /sim/scenarios/
 /sim/nuscenes_test150_tables/
+/sim/nuscenes_dev100_tables/
