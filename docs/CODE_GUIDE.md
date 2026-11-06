@@ -183,7 +183,7 @@ Training env: `.venv` (main). Simulator env: `.venv_sim`. Run everything from th
 .venv/bin/python scripts/train_model.py --model v2 --predict-agents 16 --ego-plan --soft-scores \
     --epochs 60 --seed 42 --checkpoint-dir checkpoints/v2_b123
 
-# Evaluate a checkpoint (val + test)
+# Evaluate a checkpoint on val (add --eval-test only for the final evaluation)
 .venv/bin/python scripts/train_model.py --model v2 --evaluate-only --checkpoint checkpoints/v2_predicted/v2_seed42_best.pth
 
 # Turn-angle bins on val, and an example plot
@@ -198,8 +198,8 @@ Training env: `.venv` (main). Simulator env: `.venv_sim`. Run everything from th
 .venv_sim/bin/python scripts/sim_check.py replay --index 0
 ```
 
-Without `--dataset`, the turn-angle script uses the **test** split; pass the val file until the final evaluation.
-The `--evaluate-only` command prints test numbers too.
+Both scripts use **val** by default; test is scored only with `--eval-test` (final evaluation or reproducibility
+checks). The turn-angle script refuses a test `--dataset` without `--eval-test`.
 
 Simulator env setup (already done): `uv venv --python 3.10 .venv_sim`, then with `VIRTUAL_ENV=.venv_sim`:
 `uv pip install -e sim/metadrive -e sim/scenarionet "nuscenes-devkit>=1.1.10"` and
