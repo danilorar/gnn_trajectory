@@ -479,7 +479,7 @@ def follow(index, replan_steps=5):
 
 
 def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, out_json, data_dir=None, quiet=False,
-         reactive=False):
+         reactive=False, device="cuda"):
     """Closed-loop planners (CV and/or WM) on the converted mini scenes + the logged ego ("expert").
     During CV runs the WM runs in shadow mode (chosen plan only) so every at-fault collision can be compared
     with what the WM would have predicted."""
@@ -495,7 +495,7 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     data_dir = Path(data_dir or SCENARIO_DIR)
     n = get_number_of_scenarios(str(data_dir))
     scene_indices = scene_indices or list(range(n))
-    wm = WorldModelPredictor(checkpoint) if ("wm" in predictor_names or "cv" in predictor_names) else None
+    wm = WorldModelPredictor(checkpoint, device) if ("wm" in predictor_names or "cv" in predictor_names) else None
     runs = [(("CV" if p_ == "cv" else "WM") + " planner", CVPredictor() if p_ == "cv" else wm,
              wm if p_ == "cv" else None, {}, False) for p_ in predictor_names]
     runs.append(("expert (log)", None, None, dict(agent_policy=ReplayEgoCarPolicy), True))
@@ -513,22 +513,29 @@ def plan(predictor_names, scene_indices, gif_indices, viz_indices, checkpoint, o
     out_dir.mkdir(parents=True, exist_ok=True)
     results = {}
     for label, predictor, shadow, cfg, expert in runs:
-        env = ScenarioEnv({**base, **cfg})
         rows = []
         tag = label.split()[0].lower()
+        env = None
         try:
             for i in scene_indices:
+                # A fresh MetaDrive engine per scene: its physics keeps state across reset() (0.1 mm differences
+                # in the ego path after earlier scenes), which can flip a close plan choice; with a new env the
+                # result of a scene does not depend on which scenes ran before it.
+                if env is not None:
+                    env.close()
+                env = ScenarioEnv({**base, **cfg})
                 env.reset(seed=i)
                 gif = out_dir / f"plan_{tag}_scene{i}.gif" if (i in gif_indices and not expert) else None
                 viz = out_dir / f"planview_{tag}_scene{i}.gif" if (i in viz_indices and not expert) else None
-                m, chosen = run_scene(env, predictor, gif=gif, expert=expert, shadow=shadow, viz=viz)
+                m, chosen = run_scene(env, predictor, gif=gif, expert=expert, shadow=shadow, viz=viz, device=device)
                 m["chosen_plans"], m["index"] = chosen, i
                 rows.append(m)
                 print(f"  {label:14s} {m['scene']}: at-fault {m['at_fault']}, off-road steps {m['offroad_steps']}, "
                       f"progress {m['progress_ratio']:.2f}" + (f", plan {m['plan_ms']:.0f} ms" if not expert else ""),
                       flush=True)
         finally:
-            env.close()
+            if env is not None:
+                env.close()
         results[label] = rows
 
     head = (f" {'scene':10s} | {'':14s} | at-fault | not at fault | off-road | progress | max |a| | max |jerk| "
@@ -628,6 +635,36 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
                          f"{f(o, 'not_at_fault'):.3f} -> {f(n_, 'not_at_fault'):.3f} | "
                          f"{np.nanmean([m['progress_ratio'] for m in o]):.3f} -> {np.nanmean([m['progress_ratio'] for m in n_]):.3f} |")
         lines.append("")
+    lines += ["## Collision types (counts over all scenes)", "",
+              "initial overlap = first contact within the first 0.5 s (boxes overlap from the start of the log);",
+              "not at fault = rear-ended, or the ego stopped (< 0.5 m/s).", "",
+              "| | at fault | not at fault | initial overlap |", "|---|---|---|---|"]
+    for name, rows in (("CV planner", cv), ("WM planner", wm), ("expert (log)", ex)):
+        lines.append(f"| {name} | {sum(m['at_fault'] for m in rows)} | {sum(m['not_at_fault'] for m in rows)} | "
+                     f"{sum(m.get('initial_overlap', 0) for m in rows)} |")
+    lines += ["", "## At-fault events: what the planner saw at the last 2 planning steps", "",
+              "| planner | scene | t | agent | vetoed plans | chosen-plan risk | risk from this agent | zero-risk plans | "
+              "first seen (s before) | diagnosis |", "|---|---|---|---|---|---|---|---|---|---|"]
+    diag_count = {}
+    for name, rows in (("CV", cv), ("WM", wm)):
+        for m in rows:
+            for c in m["collided"]:
+                if c.get("kind") != "at_fault":
+                    continue
+                d = c.get("diagnosis", "?")
+                diag_count[(name, d)] = diag_count.get((name, d), 0) + 1
+                f2 = lambda xs: " / ".join(f"{x:.2f}" if isinstance(x, float) else str(x) for x in xs)
+                lines.append(f"| {name} | {m['scene']} | {c['t']:.1f} s | {c['category']} | {f2(c.get('diag_vetoed', []))} | "
+                             f"{f2(c.get('diag_chosen_risk', []))} | {f2(c.get('diag_agent_risk', []))} | "
+                             f"{f2(c.get('diag_zero_risk_plans', []))} | {c.get('first_seen_s_before')} | {d} |")
+    lines += ["", "Values are for the two planning steps before the collision (earlier / later).", "",
+              "| planner | no safe plan existed | safe plan existed but cost picked a risky one | prediction miss |",
+              "|---|---|---|---|"]
+    for name in ("CV", "WM"):
+        lines.append(f"| {name} | {diag_count.get((name, 'no safe plan existed'), 0)} | "
+                     f"{diag_count.get((name, 'safe plan existed but cost picked a risky one'), 0)} | "
+                     f"{diag_count.get((name, 'prediction miss'), 0)} |")
+    lines.append("")
     lines += ["## Near misses (means over scenes)", "", "| | min distance [m] | min TTC [s] (capped at 5) | "
               "scenes with TTC < 1 s | share of steps with distance < 1 m |", "|---|---|---|---|---|"]
     for name, rows in (("CV planner", cv), ("WM planner", wm), ("expert (log)", ex)):
@@ -767,6 +804,7 @@ if __name__ == "__main__":
     p.add_argument("--out", type=Path, help="JSON with metrics and chosen-plan cost terms")
     p.add_argument("--data", help="scenario folder (default: the mini scenes)")
     p.add_argument("--reactive", action="store_true", help="logged vehicles behind the ego driven by IDM")
+    p.add_argument("--device", default="cuda", help="device for the WM and the collision cost (cuda / cpu)")
     p = sub.add_parser("follow")
     p.add_argument("--index", type=int, default=0, help="scenario index (0 = scene-0061)")
     p = sub.add_parser("match")
@@ -780,7 +818,8 @@ if __name__ == "__main__":
         convert_test(args.scenes, args.workers) if args.set == "test150" else convert(args.scenes)
     elif args.step == "plan":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
-             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive)
+             args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive,
+             device=args.device)
     elif args.step == "evaluate":
         evaluate_test(Path(args.data), args.checkpoint, args.out, compare=args.compare, reactive=args.reactive)
     elif args.step == "follow":

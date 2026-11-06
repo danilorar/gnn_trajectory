@@ -149,13 +149,15 @@ def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, e
     current (A, 2) and yaw (A,) now; sizes (A, 2) (width, length); is_vehicle (A,).
     Footprints: 3 circles (r = 1 m) along vehicles, 1 circle (r = 0.5 m) otherwise; agent headings from the
     predicted motion, or the current heading while (nearly) standing still.
-    Returns risk (P,) = sum_a sum_k p_k / (1 + t_first) and early (P,) = the same counting only t_first <= 2 s."""
+    Returns risk (P,) = sum_a sum_k p_k / (1 + t_first), early (P,) = the same counting only t_first <= 2 s,
+    and per_agent (P, A) = each agent's share of risk."""
     import torch
     f32 = dict(device=device, dtype=torch.float32)
     P, A, K = probs.shape
     risk, early = torch.zeros(P, **f32), torch.zeros(P, **f32)
+    per_agent = torch.zeros(P, A, **f32)
     if A == 0:
-        return risk.cpu().numpy(), early.cpu().numpy()
+        return risk.cpu().numpy(), early.cpu().numpy(), per_agent.cpu().numpy()
     plan = torch.as_tensor(dense_plans, **f32)
     ed = torch.stack([torch.cos(plan[..., 2]), torch.sin(plan[..., 2])], -1)              # (P, 61, 2)
     e_off = torch.tensor([-1.0, 0.0, 1.0], **f32) * max(ego_size[1] / 2 - 1.0, 0.0)
@@ -190,7 +192,8 @@ def collision_risk(dense_plans, paths, probs, current, yaw, sizes, is_vehicle, e
         contrib = pr * torch.where(any_hit, 1.0 / (1.0 + t_first), torch.zeros_like(t_first))
         risk += contrib.sum((1, 2))
         early += (contrib * (t_first <= VETO["horizon_s"])).sum((1, 2))
-    return risk.cpu().numpy(), early.cpu().numpy()
+        per_agent[:, sl] = contrib.sum(2)
+    return risk.cpu().numpy(), early.cpu().numpy(), per_agent.cpu().numpy()
 
 
 def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weights=WEIGHTS, device="cpu"):
@@ -206,14 +209,15 @@ def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weigh
         same_dir = np.cos(yaw - eyaw) > np.cos(np.radians(30))
         keep.append(not (xr < -1.0 and abs(yr) < 1.5 and same_dir))          # behind in the same lane -> ignore
     keep = np.asarray(keep, bool)
-    risk, early = np.zeros(P), np.zeros(P)
+    risk, early, agent_risk = np.zeros(P), np.zeros(P), {}
     if keep.any():
         kid = [i for i, k_ in zip(ids, keep) if k_]
         st = [by_id[i] for i in kid]
-        risk, early = collision_risk(
+        risk, early, per_agent = collision_risk(
             dense_plans, paths[:, keep], probs[:, keep], np.array([q[:2] for q in st]), np.array([q[2] for q in st]),
             np.array([q[4:6] for q in st]), np.array([q[6].startswith(VEHICLE_TYPES) or q[6] in ("VEHICLE", "CYCLIST")
                                                       for q in st]), ego_size, device)
+        agent_risk = {i: per_agent[:, a] for a, i in enumerate(kid)}
 
     s_now = min(ref.project(np.array(scene.ego[:2]))[0], ref.length)
     s_end = np.array([ref.project(p[-1, :2])[0] for p in dense_plans])
@@ -233,7 +237,7 @@ def plan_costs(scene, ref, dense_plans, meta, paths, probs, ids, ego_size, weigh
     else:
         total = np.where(vetoed, np.inf, total)
     return total, dict(risk=risk, early_risk=early, progress=progress, comfort=comfort, offset2=offset2,
-                       vetoed=vetoed.astype(float))
+                       vetoed=vetoed.astype(float)), agent_risk
 
 
 def box(x, y, yaw, length, width):
@@ -339,13 +343,16 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
                 sparse, dense, meta = generate_plans(ref, (x, y, yaw, v))
                 paths, probs, ids = predictor.predict(scene, sparse)
                 t_pred = time.perf_counter()
-                total, terms = plan_costs(scene, ref, dense, meta, paths, probs, ids, ego_size, weights, device)
+                total, terms, agent_risk = plan_costs(scene, ref, dense, meta, paths, probs, ids, ego_size, weights,
+                                                      device)
                 k = int(np.argmin(total))
                 plan, plan_t = dense[k], 0.0
                 t_plan.append(1000 * (time.perf_counter() - t0))
                 t_parts.append(dict(predict=t_pred - t0, cost=time.perf_counter() - t_pred))
                 entry = dict(t=step / 10, speed=meta[k][0], offset=meta[k][1], total=float(total[k]),
-                             n_vetoed=int(terms["vetoed"].sum()),
+                             n_vetoed=int(terms["vetoed"].sum()), min_risk_any=float(terms["risk"].min()),
+                             n_zero_risk=int((terms["risk"] < 1e-6).sum()),
+                             agent_risk_chosen={i: float(r[k]) for i, r in agent_risk.items() if r[k] > 1e-6},
                              **{n: float(t_[k]) for n, t_ in terms.items() if n != "vetoed"})
                 chosen_log.append(entry)
                 # WM predictions for the chosen plan (own, or shadow during a CV run) + coverage of nearby agents
@@ -397,13 +404,18 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
     jerk = np.diff(acc) / 0.5 if len(acc) > 1 else np.zeros(1)
     collided = []
     for oid, (cat, fault, t) in hits.items():
-        c = dict(object=oid[:8], category=cat, at_fault=fault, t=t / 10)
-        if fault and pred_log:
-            c.update(wm_prediction_before(pred_log, oid, t, scenario, ego_size))
+        kind = classify_collision(t / 10, fault)
+        c = dict(object=oid[:8], object_id=oid, category=cat, at_fault=kind == "at_fault", kind=kind, t=t / 10)
+        if kind == "at_fault":
+            if pred_log:
+                c.update(wm_prediction_before(pred_log, oid, t, scenario, ego_size))
+            c.update(diagnose_at_fault(chosen_log, oid, t / 10))
         collided.append(c)
     metrics = dict(
         scene=scenario["metadata"]["scenario_id"], map=scenario["metadata"].get("map", ""), steps=steps,
-        at_fault=sum(f for _, f, _ in hits.values()), not_at_fault=sum(not f for _, f, _ in hits.values()),
+        at_fault=sum(c["kind"] == "at_fault" for c in collided),
+        not_at_fault=sum(c["kind"] == "not_at_fault" for c in collided),
+        initial_overlap=sum(c["kind"] == "initial_overlap" for c in collided),
         collided=collided, metadrive_crash_steps=md_crash, offroad_steps=offroad,
         progress_ratio=float(min(s_end, ref.length) / ref.length) if ref.length >= 1.0 else float("nan"),
         overshoot_m=float(max(s_end - ref.length, 0.0)), driven_m=float(s_end), logged_m=float(ref.length),
@@ -416,12 +428,48 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         min_dist_m=float(np.min(near_d)) if near_d else float("inf"),
         min_ttc_s=float(np.min(near_ttc)) if near_ttc else float("inf"),           # inf = none within 5 s
         share_dist_below_1m=float(np.mean(np.asarray(near_d) < 1.0)) if near_d else 0.0,
-        ego_size=list(ego_size))
+        ego_size=list(ego_size), trace=np.asarray(poses)[:, :2].round(4).tolist(),
+        chosen_index=[(c["speed"], c["offset"]) for c in chosen_log])
     if gif is not None and frames:
         save_gif(frames, gif, 100)
     if viz is not None and viz_frames:
         save_gif(viz_frames, viz, 400)
     return metrics, chosen_log
+
+
+INITIAL_OVERLAP_S = 0.5
+
+
+def classify_collision(t, at_fault_rule):
+    """initial_overlap if the first contact is within the first 0.5 s (boxes overlapping from the start of the
+    log), else at_fault / not_at_fault from the rear / stopped-ego rule."""
+    if t <= INITIAL_OVERLAP_S:
+        return "initial_overlap"
+    return "at_fault" if at_fault_rule else "not_at_fault"
+
+
+def diagnose_at_fault(chosen_log, oid, t, last=2):
+    """From the cost logs of the last `last` planning steps before the collision (in this order):
+    cost picked risky - at some step a zero-risk plan existed but the chosen plan had risk > 0;
+    prediction miss   - else, if the predictor gave this agent zero risk for the chosen plan at every step;
+    no safe plan      - else (the risk was seen, and no zero-risk plan existed when it was).
+    Also: seconds before the collision at which this agent's risk for the chosen plan first appeared."""
+    steps = [c for c in chosen_log if c["t"] < t][-last:]
+    if not steps:
+        return dict(diagnosis="no planning step before")
+    agent = [c.get("agent_risk_chosen", {}).get(oid, 0.0) for c in steps]
+    out = dict(diag_t=[c["t"] for c in steps], diag_vetoed=[c["n_vetoed"] for c in steps],
+               diag_chosen_risk=[c["risk"] for c in steps], diag_agent_risk=agent,
+               diag_zero_risk_plans=[c.get("n_zero_risk", -1) for c in steps])
+    seen = [c["t"] for c in chosen_log if c["t"] < t and c.get("agent_risk_chosen", {}).get(oid, 0.0) > 1e-6]
+    out["first_seen_s_before"] = round(t - seen[0], 1) if seen else None
+    if any(c.get("n_zero_risk", 0) > 0 and c["risk"] > 1e-6 for c in steps):
+        out["diagnosis"] = "safe plan existed but cost picked a risky one"
+    elif all(a_ < 1e-6 for a_ in agent):
+        out["diagnosis"] = "prediction miss"
+    else:
+        out["diagnosis"] = "no safe plan existed"
+    return out
 
 
 def save_gif(frames, path, ms):
