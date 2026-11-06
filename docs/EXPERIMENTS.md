@@ -47,6 +47,7 @@ within 2 s). WM = v2_d_rerun unless noted. Results: `outputs/sim/<run>/report.md
 | test150_v2 | 2026-11-06 | 146 test | Zoe ego 4.08 x 1.73 m, ego < 0.5 m/s not at fault, near-miss metrics | Superseded: order-dependent (MetaDrive physics state across resets; 1 of 15 re-rendered scenes changed) |
 | test150_v3 | 2026-11-06 | 146 test | v2 + fresh env per scene (deterministic), initial-overlap class, at-fault diagnosis | Current non-reactive result |
 | dev100 | 2026-11-06 | 100 val-split scenes (`sim/scene_lists/dev100.json`) | footprint = circles covering each box (real sizes), tracking error | Planner development / crash diagnosis (never test). At fault CV 3 / WM 1, all 'no safe plan existed' (risk first seen 0.4–0.8 s before); 0 'zero predicted risk'; tracking p95 0.24 m |
+| reactive_dev (stage 1) | 2026-11-07 | mini + dev100 (never test) | `--reactive idm`: log-path IDM agents; IDM tuned on dev100 (3 attempts; final s0 1.0, T 0.8, a_max 3.0, b 3.0, v0 x1.5) | Validation (a) fails (8 s median 0.65 m / p95 3.2 m; tracking law lags, not IDM), (b) passes (0/20 vs replay 18/20); dev100 reactive: rear-ended 0.23 -> 0.02 (CV), 0.24 -> 0.01 (WM); WM close-call -5.1 pp (p 3e-5). Report: `outputs/sim/reactive_dev/report.md`. Pre-registered reactive test NOT run (needs (a) to pass first) |
 
 ## Pre-registration: closed-loop test with reactive agents
 Written 2026-11-06, before any reactive run on the test scenes. Nothing below may change after the first reactive
