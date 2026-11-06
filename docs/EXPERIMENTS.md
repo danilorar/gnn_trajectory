@@ -57,7 +57,7 @@ test run. If validation fails its targets (median along-track error < 0.2 m and 
 the log; the follower brakes without collision), the test run does not start and this is reported.
 
 **Fixed for the test run.** Scenes: `sim/scenarios/nuscenes_test150` (146 = official nuScenes val minus the 4 dev mini
-scenes). Planner, cost weights, veto, plan grid, tracker: as in test150_v3. WM checkpoint: v2_d_rerun (epoch 40). Ego:
+scenes). Planner, cost weights, veto, plan grid, tracker: as in test150_v3. WM checkpoint: see Amendment 1, (2). Ego:
 Zoe size. Fresh MetaDrive env per scene. One run per planner (CV, WM) plus the expert (logged ego, agents reactive).
 
 **Collision classes** (as in test150_v3): initial overlap (first contact within 0.5 s); not at fault (the other object
@@ -81,4 +81,31 @@ plan / cost picked a risky plan / prediction miss).
 
 **Reported regardless of outcome.** The full per-scene table (JSON), the 5 worst scenes per planner with GIFs, and a
 random spot-check of 5 at-fault and 5 not-at-fault events with frames.
+
+### Amendment 1 (2026-11-06, made before any reactive run)
+Made before any reactive run on any scene (mini or test). The non-reactive test results test150_v2 had been seen when
+it was written: there, the close-call share was the only significant paired difference (WM − CV −2.4 pp, 95% CI
+[−4.3, −0.7], Wilcoxon p = 0.02). This amendment overrides the corresponding parts above.
+
+**(1) Two co-primary endpoints, Bonferroni-corrected.**
+- At-fault collisions per scene, and the close-call share (share of steps with ego–agent box distance < 1 m), both
+  paired WM − CV over the 146 scenes.
+- Each is tested at α = 0.025: a bootstrap **97.5%** CI (10,000 resamples over scenes, seed 0) and a two-sided Wilcoxon
+  signed-rank p-value compared with 0.025.
+- Decision: "WM is safer" if **either** 97.5% CI lies entirely below 0 **and** progress is not worse by more than 0.02
+  (lower bound of the progress 95% CI > −0.02). Otherwise "no detectable difference".
+- Secondary endpoints are unchanged and are no longer co-primary: progress ratio, not-at-fault collisions per scene, min
+  distance, min TTC.
+
+**(2) Checkpoint = the final model chosen on val, fixed before the reactive run.** It is not necessarily v2_d_rerun.
+The candidates are the multi-agent ego-plan models in the run table, including e32 and e63 when they finish. Only val
+(open loop) and the mini dev scenes (closed loop) may be used, never test. The rule is applied in order:
+1. **Follower test passed** (open-loop `--follower-test`, 20 val scenes). The braking plan must lower the follower's
+   predicted 6 s travel below the real plan's, and the accelerating plan must raise it above the real plan's.
+2. Among those, the **best val moving-agent top-1 ADE**.
+3. Tie-break: **higher coverage** (more predicted agent slots). Within 0.02 m counts as a tie.
+
+The chosen checkpoint, the numbers behind the choice, and the date are recorded here before the reactive run starts.
+
+The pass criterion in step 1 is written out here so that it is fixed. Earlier, the follower test was only read by eye.
 
