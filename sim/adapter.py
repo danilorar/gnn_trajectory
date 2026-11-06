@@ -120,14 +120,52 @@ def _in_box(feature, origin, radius):
     return LineString(np.asarray(feature["polyline"])[:, :2]).intersects(patch)
 
 
-def lane_tokens(map_features, origin, yaw, radius=50.0, seg_len=20):
+class LaneSelector:
+    """Which lanes / connectors intersect the box around a point: the same rule as _in_box, but the shapely
+    shapes are built once per scene and kept in an STRtree, and the candidates (from a box `margin` m larger)
+    are cached until the query point has moved more than `margin` m. The result is exact, not approximate:
+    only the final intersects() test runs per call, on the cached candidates."""
+
+    def __init__(self, map_features, margin=5.0):
+        from shapely.geometry import LineString, Polygon
+        from shapely.strtree import STRtree
+        self.margin, self.center, self.candidates = margin, None, []
+        self.tokens, geoms = [], []
+        order = {False: 0, True: 1}
+        items = [(order[LANE_TYPES[f["type"]]], n, t, f) for n, (t, f) in enumerate(map_features.items())
+                 if f["type"] in LANE_TYPES and len(f["polyline"]) >= 2]
+        for _, _, token, f in sorted(items, key=lambda x: (x[0], x[1])):          # lanes, then connectors
+            poly = f.get("polygon")
+            geoms.append(Polygon(np.asarray(poly)[:, :2]) if poly is not None and len(poly) >= 3
+                         else LineString(np.asarray(f["polyline"])[:, :2]))
+            self.tokens.append(token)
+        self.geoms = geoms
+        self.tree = STRtree(geoms)
+        self.recomputed = 0
+
+    def select(self, origin, radius):
+        from shapely.geometry import box
+        if self.center is None or np.hypot(*(np.asarray(origin) - self.center)) > self.margin:
+            r = radius + self.margin
+            hits = self.tree.query(box(origin[0] - r, origin[1] - r, origin[0] + r, origin[1] + r))
+            self.candidates, self.center = sorted(int(i) for i in hits), np.asarray(origin, float)
+            self.recomputed += 1
+        patch = box(origin[0] - radius, origin[1] - radius, origin[0] + radius, origin[1] + radius)
+        return [self.tokens[i] for i in self.candidates if self.geoms[i].intersects(patch)]
+
+
+def lane_tokens(map_features, origin, yaw, radius=50.0, seg_len=20, selector=None):
     """build_lane_tokens() on ScenarioNet map features. Polylines are nuScenes discretize_lane() output
-    at 1 m: (x, y, yaw) per point. Order: lanes, then connectors (as get_lanes_in_radius)."""
-    selected = []
-    for is_connector in (False, True):
-        for token, f in map_features.items():
-            if LANE_TYPES.get(f["type"]) is is_connector and len(f["polyline"]) >= 2 and _in_box(f, origin, radius):
-                selected.append(token)
+    at 1 m: (x, y, yaw) per point. Order: lanes, then connectors (as get_lanes_in_radius).
+    selector: a LaneSelector for this map (cached, same result); None = test every feature."""
+    if selector is not None:
+        selected = selector.select(origin, radius)
+    else:
+        selected = []
+        for is_connector in (False, True):
+            for token, f in map_features.items():
+                if LANE_TYPES.get(f["type"]) is is_connector and len(f["polyline"]) >= 2 and _in_box(f, origin, radius):
+                    selected.append(token)
     lane_points, is_conn, edges, first, last = [], [], [], {}, {}
     for token in selected:
         f = map_features[token]
@@ -147,7 +185,7 @@ def lane_tokens(map_features, origin, yaw, radius=50.0, seg_len=20):
 
 
 def build_sample(buffer, map_features, target_id, ego_plan=None, ego_plan_valid=None, agent_radius=35.0,
-                 lane_radius=50.0):
+                 lane_radius=50.0, selector=None):
     """One processed-style sample (the fields TrajectoryDatasetV2 reads) for target_id at the buffer's last step.
 
     ego_plan: (12, 3) world (x, y, yaw) at t + 0.5 s ... t + 6 s, or None (then marked invalid)."""
@@ -178,7 +216,7 @@ def build_sample(buffer, map_features, target_id, ego_plan=None, ego_plan_valid=
     else:
         ego_plan_valid = np.zeros(FUTURE, bool)
 
-    lanes, is_conn, edges = lane_tokens(map_features, origin, tyaw, lane_radius)
+    lanes, is_conn, edges = lane_tokens(map_features, origin, tyaw, lane_radius, selector=selector)
     return {
         "agent_past": past, "agent_past_valid": past_valid,
         "agent_future": np.zeros((len(ids), FUTURE, 4), np.float32),          # unknown at run time

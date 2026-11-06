@@ -109,10 +109,13 @@ class WorldModelPredictor:
         if not cands:
             return np.repeat(paths, 6, axis=2), np.repeat(probs, 6, axis=2) / 6, ids
         target = min(cands)[1]
-        sample = build_sample(scene.buffer, scene.map_features, target, ego_plan=plans[0])
+        if getattr(self, "_selector_for", None) is not scene.map_features:      # one LaneSelector per scene
+            from sim.adapter import LaneSelector
+            self.selector, self._selector_for = LaneSelector(scene.map_features), scene.map_features
+        sample = build_sample(scene.buffer, scene.map_features, target, ego_plan=plans[0], selector=self.selector)
         item = to_model_inputs(sample, order="ego")                         # slots 2..16 = nearest to the ego
         P = len(plans)
-        batch = {k: v[None].expand(P, *v.shape).contiguous().to(self.device) for k, v in item.items()}
+        batch = {k: v.to(self.device)[None].expand(P, *v.shape) for k, v in item.items()}   # one copy, expanded on GPU
         tx, ty, tyaw = scene.buffer.now()[target][:3]
         batch["ego_future"] = torch.as_tensor(np.stack([to_local(p, np.array([tx, ty]), tyaw) for p in plans]),
                                               dtype=torch.float32, device=self.device)
