@@ -14,7 +14,5 @@ Updated 2026-11-07.
 - Nothing.
 
 ## Needs
-- Uncommitted work in the tree that is not part of this hand-off: `sim/closed_loop.py` (focus_label for the
-  showcase view) and the deleted `assets/right_turn.gif`. Commit or discard.
 - Open items: reactive stage 2 (swept ego footprint, merge anticipation), weak WM follower reaction,
   coverage beyond 16 slots (see docs/EXPERIMENTS.md "Next steps").

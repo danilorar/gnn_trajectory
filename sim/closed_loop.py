@@ -663,6 +663,18 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
     return img
 
 
+def focus_label(category):
+    """Plain-language name of a nuScenes category for the showcase view."""
+    if "personal_mobility" in category or category in ("vehicle.bicycle", "vehicle.motorcycle"):
+        return "rider"
+    if category.startswith("human."):
+        return "pedestrian"
+    for key, name in (("bus", "bus"), ("truck", "truck"), ("trailer", "trailer"), ("car", "car")):
+        if key in category:
+            return name
+    return "road user"
+
+
 def render_story_frame(scene, plan_dense, paths, probs, ids, entry, features, focus, title, collided,
                        trail=None, half_width=18.0, ego_size=(1.73, 4.08)):
     """A simple view for people who do not know the project: the road (lane surfaces), our car (green) with only
@@ -710,7 +722,7 @@ def render_story_frame(scene, plan_dense, paths, probs, ids, entry, features, fo
                 ax.plot(*pth[-1], "o", color="#7b3fbf", ms=7, alpha=min(1.0, 0.3 + pr), zorder=5)
         b = box(x, y, yaw, max(l_, 1.0), max(w_, 1.0))
         ax.fill(*b.exterior.xy, color="#7b3fbf", lw=0, zorder=6)
-        ax.text(x + 1.2, y + 1.2, "rider", color="#7b3fbf", fontsize=10, weight="bold", zorder=9)
+        ax.text(x + 1.2, y + 1.2, focus_label(cat), color="#7b3fbf", fontsize=10, weight="bold", zorder=9)
     if trail is not None and len(trail) > 1:
         tr = np.asarray(trail)
         ax.plot(tr[:, 0], tr[:, 1], color="#2e8b57", lw=1.2, ls=":", zorder=3)
@@ -734,7 +746,8 @@ def render_story_frame(scene, plan_dense, paths, probs, ids, entry, features, fo
                 weight="bold", bbox=dict(facecolor="#d62728", edgecolor="none", boxstyle="round,pad=0.3"), zorder=12)
     handles = [plt.Line2D([], [], color="#1f7a3a", lw=4), plt.Line2D([], [], color="#7b3fbf", lw=2.5),
                plt.Line2D([], [], color="#9a9a9a", lw=6)]
-    ax.legend(handles, ["our car + the plan it drives", "rider + where the planner thinks they go",
+    label = focus_label(now[focus][5]) if focus in now else "road user"
+    ax.legend(handles, ["our car + the plan it drives", f"{label} + where the planner thinks they go",
                         "other road users"], loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=1, fontsize=9.5,
               frameon=False)
     fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.2)
