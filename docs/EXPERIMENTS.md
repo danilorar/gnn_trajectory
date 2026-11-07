@@ -122,6 +122,13 @@ no tie). This checkpoint is fixed for the reactive run.
 
 The pass criterion in step 1 is written out here so that it is fixed. Earlier, the follower test was only read by eye.
 
+
+### Validation targets for check (d) (recorded 2026-11-07, before any reactive test result)
+Check (d): the logged ego driven 10% slower along its logged route, agents in `--reactive idm` mode, mini + dev100.
+- 0 rear-ends by an **eligible** reactive agent that had the ego as its leader.
+- 0 new agent–agent overlaps (not in the log), or each one explained and shown not to be caused by the reaction rule.
+- Max agent deceleration ≤ 6 m/s² (b_max) is allowed. The number of scenes that hit the cap is reported as a limitation.
+
 ## Next steps (handoff, 2026-11-07, two-state rule)
 1. Reactive two-state rule: (a) and (b) pass on mini + dev100; (d) (ego 10% slower) fails on dev100: 1 rear-end
    (scene-0219, the hitting agent never reacted), 2 new agent-agent overlaps (0045, 0238), max decel at b_max in 13 scenes
