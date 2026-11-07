@@ -1,7 +1,7 @@
 """Show the six GRU predictions for one test sample, optionally saving a PNG.
 
 Example:
-    python tools/plot_qualitative_prediction.py
+    python plots/plot_qualitative_prediction.py
 """
 
 import argparse

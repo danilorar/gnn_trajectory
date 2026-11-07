@@ -4,7 +4,7 @@ Uses the saved sequence metadata, processed test dataset, and trained GRU.
 No temporary caches, raw nuScenes metadata, or training are needed.
 
 Example:
-    python tools/plot_prediction_sequence.py --sequence assets/right_turn_sequence.json --output-dir /tmp/scene0556
+    python plots/plot_prediction_sequence.py --sequence assets/right_turn_sequence.json --output-dir /tmp/scene0556
 """
 
 import argparse

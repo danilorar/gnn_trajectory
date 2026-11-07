@@ -22,7 +22,7 @@ wm/
 │   ├── run_turn_angle_analysis.py   errors by turn angle, top-1 errors, example plots
 │   ├── run_interaction_analysis.py  v1 neighbour-removal analysis
 │   └── sim_check.py                 Phase D prep: MetaDrive / ScenarioNet smoke tests
-├── tools/                      v1 plotting (qualitative figures, the README GIF)
+├── plots/                      v1 plotting (qualitative figures, the v1 README GIF)
 ├── assets/                     anchors.npy (k-means), anchors_angle.npy (turn-spread), README GIF
 ├── report/                     v1 report PDF, v2_training_plan.xlsx (settings + results)
 ├── docs/CODE_GUIDE.md          this file
