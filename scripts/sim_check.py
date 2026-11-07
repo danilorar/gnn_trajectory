@@ -978,7 +978,30 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
                      reactive_stays_behind=sum(r["reactive"]["stays_behind"] for r in rows))
         b_res["pass_target"] = bool(rows and b_res["reactive_collisions"] == 0)
         print(f"[{name}] (b) summary: {json.dumps(b_res)}", flush=True)
-        result["sets"][name] = dict(a=a_res, b=b_res, b_cases=rows)
+
+        # (d) the logged ego driven 10% slower (tracker on its logged route, 0.9 x logged speed)
+        d_rows = []
+        for i in range(n):
+            env = ScenarioEnv({**base, "num_scenarios": n, "data_directory": str(data_dir)})
+            try:
+                env.reset(seed=i)
+                m, _ = cl.run_scene(env, None, reactive=True, drive_log_scale=0.9)
+            finally:
+                env.close()
+            R = m["reactive"]
+            d_rows.append(dict(scene=m["scene"], new_overlaps=R["new_agent_collisions"], log_overlaps=R["log_agent_collisions"],
+                               max_decel=R["max_decel"], rear_ends=sum(c["kind"] == "not_at_fault" for c in m["collided"]),
+                               at_fault=sum(c["kind"] == "at_fault" for c in m["collided"]),
+                               cut_ins=sum(c.get("unsafe_cut_in", False) for c in m["collided"])))
+        d_res = dict(scenes=len(d_rows), new_agent_overlaps=sum(r["new_overlaps"] for r in d_rows),
+                     log_agent_overlaps=sum(r["log_overlaps"] for r in d_rows),
+                     max_decel=float(max(r["max_decel"] for r in d_rows)) if d_rows else 0.0,
+                     rear_ends=sum(r["rear_ends"] for r in d_rows), ego_at_fault=sum(r["at_fault"] for r in d_rows),
+                     scenes_with_rear_end=[r["scene"] for r in d_rows if r["rear_ends"]])
+        d_res["pass_target"] = bool(d_res["new_agent_overlaps"] == 0 and d_res["rear_ends"] == 0
+                                    and d_res["max_decel"] <= cl.IDM["b_max"] + 1e-6)
+        print(f"[{name}] (d) ego 10% slower: {json.dumps(d_res)}", flush=True)
+        result["sets"][name] = dict(a=a_res, b=b_res, b_cases=rows, d=d_res, d_rows=d_rows)
     tag = "_".join(f"{k}{v}" for k, v in idm_overrides.items()) or "doc"
     (out_dir / f"validation_{tag}.json").write_text(json.dumps(result, indent=1, default=str))
     print(f"saved {out_dir / f'validation_{tag}.json'}")

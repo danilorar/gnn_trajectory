@@ -332,7 +332,7 @@ CUT_IN_S = 2.0      # reactive mode: hit from behind within 2 s after the ego en
 
 
 def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
-              nearby_radius=30.0, device="cuda", reactive=False):
+              nearby_radius=30.0, device="cuda", reactive=False, drive_log_scale=None):
     """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
 
     shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
@@ -357,6 +357,13 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         x, y, yaw, v = float(a.position[0]), float(a.position[1]), float(a.heading_theta), float(a.speed)
         if expert:
             act = [0.0, 0.0]
+        elif drive_log_scale is not None:                # no planner: the ego drives its logged route, speed scaled
+            if step % replan_steps == 0:
+                from sim.planner import logged_speed
+                _, d_, _ = generate_plans(ref, (x, y, yaw, v), speeds=[drive_log_scale * logged_speed(scenario, step)],
+                                          offsets=[0.0])
+                plan, plan_t = d_[0], 0.0
+            act = tracker.action(x, y, yaw, v, plan, plan_t)
         else:
             if step % replan_steps == 0:
                 t0 = time.perf_counter()
@@ -491,7 +498,8 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
         track_lat_p95_m=float(np.percentile([abs(e[1]) for e in track_err], 95)) if track_err else 0.0,
         reactive=None if rt is None else dict(
             n_agents=len(rt.agents), errors=r_err, new_agent_collisions=len(r_pairs), log_agent_collisions=len(r_log_pairs),
-            idm_binding_share=float(rt.binding_steps / max(rt.active_steps, 1)), max_ego_standoff_s=r_standoff * DT),
+            idm_binding_share=float(rt.binding_steps / max(rt.active_steps, 1)), max_ego_standoff_s=r_standoff * DT,
+            max_decel=float(-min([a_.min_acc for a_ in rt.agents.values()] + [0.0]))),
         ego_size=list(ego_size), trace=np.asarray(poses)[:, :2].round(4).tolist(),
         chosen_index=[(c["speed"], c["offset"]) for c in chosen_log])
     if gif is not None and frames:
@@ -671,6 +679,8 @@ class LogPathAgent:
                 start = None
         self.t0, self.t1 = max(runs, key=lambda r: r[1] - r[0]) if runs else (0, 0)     # [t0, t1)
         pos = np.asarray(st["position"])[self.t0:self.t1, :2].astype(float)
+        self.log_xy, self.log_heading = pos, np.asarray(st["heading"])[self.t0:self.t1].astype(float)
+        self.replay_t = None            # in REPLAY: the logged step whose exact pose (incl. heading) is used
         self.oid, self.width = oid, float(np.ravel(st["width"][self.t0])[0])
         self.length = float(np.ravel(st["length"][self.t0])[0])
         self.category = track["metadata"].get("type", track["type"])
@@ -717,18 +727,28 @@ class LogPathAgent:
         self.a_track = self.a_idm = 0.0
         self.leader = None
         self.ego_on_path_since = None
-        self.replaying = False          # snapped back to exact replay (hysteresis, see ReactiveTraffic.step)
-        self.free_steps = 0             # consecutive steps without a leader within H
+        # feed-forward for the REACTIVE state: 1 s centred moving average of a_log, clipped to +-FF_CLIP
+        k = int(round(1.0 / sim_dt))
+        pad = np.pad(self.a_log, (k // 2, k - 1 - k // 2), mode="edge") if len(self.a_log) else self.a_log
+        self.a_ff = np.clip(np.convolve(pad, np.ones(k) / k, mode="valid"), -FF_CLIP, FF_CLIP) \
+            if len(self.a_log) else self.a_log
+        self.state = "REPLAY"           # REPLAY (exact log) or REACTIVE (speed law); see ReactiveTraffic
+        self.min_acc = 0.0              # strongest deceleration applied (REACTIVE state)
+        self.free_steps = 0             # consecutive steps without a triggering leader
 
     def log_state(self, t):
         i = int(np.clip(t - self.t0, 0, len(self.s_log) - 1))
         return float(self.s_log[i]), float(self.v_log[i]) if t < self.t1 else 0.0
 
     def log_accel(self, t):
-        i = int(np.clip(t - self.t0, 0, len(self.a_log) - 1))
-        return float(self.a_log[i]) if t < self.t1 else 0.0
+        """Smoothed logged acceleration (feed-forward), 0 after the log ends."""
+        i = int(np.clip(t - self.t0, 0, len(self.a_ff) - 1))
+        return float(self.a_ff[i]) if t < self.t1 else 0.0
 
     def pose(self):
+        if self.state == "REPLAY" and self.replay_t is not None and self.t0 <= self.replay_t < self.t1:
+            i = self.replay_t - self.t0                 # exact logged pose (position and annotated heading)
+            return float(self.log_xy[i, 0]), float(self.log_xy[i, 1]), float(self.log_heading[i])
         x = np.interp(self.s, self.S, self.XY[:, 0])
         y = np.interp(self.s, self.S, self.XY[:, 1])
         i = int(np.clip(np.searchsorted(self.S, self.s), 0, len(self.S) - 1))
@@ -741,18 +761,19 @@ def _corners(x, y, yaw, length, width):
     return np.stack([x + c * pts[:, 0] - s * pts[:, 1], y + s * pts[:, 0] + c * pts[:, 1]], 1)
 
 
-SNAP = dict(free_s=1.0, ds=0.3, dv=0.3)     # snap back to replay: no leader within H for 1 s, |ds| < 0.3 m, |dv| < 0.3 m/s
+FF_CLIP = 3.0                               # m/s^2, clip of the smoothed feed-forward
+SNAP = dict(free_s=1.0, ds=0.3, dv=0.3)     # back to REPLAY: no triggering leader for 1 s, |ds| < 0.3 m, |dv| < 0.3 m/s
 
 
 class ReactiveTraffic:
     """Stage-1 reactive traffic: every moving logged vehicle (LogPathAgent.eligible) keeps its logged path and gets
-    speed a = clip(min(a_track, a_IDM), -b_max, a_max), a_track = a_log + k_s (s_log - s) + k_v (v_log - v) with the
-    logged acceleration a_log as feed-forward (from the 2 Hz positions). Snap-back hysteresis: after SNAP["free_s"]
-    without a leader within H and with |s - s_log| < SNAP["ds"], |v - v_log| < SNAP["dv"], the agent replays its log
-    exactly until a leader appears again. Reaction rule: a_IDM is applied only if the leader deviates from its log
-    (the ego more than DEVIATION_M from its logged position, or a reactive agent with |s - s_log| > DEVIATION_M);
-    a leader that is "as logged" (replayed objects, agents and ego on their logs) is ignored and the agent tracks its
-    own log, a = clip(a_track, -b_max, max(a_max, a_log)), since its logged gap to that leader is already right; pedestrians, cyclists, static / short / reversing vehicles
+    a two-state speed rule (user decision 2026-11-07):
+    - REPLAY: the agent replays its log exactly (no tracking, no feed-forward).
+    - It switches to REACTIVE when its leader is "deviating" - the ego more than DEVIATION_M from its logged position,
+      or an agent in REACTIVE state - and a_IDM < a_ff (IDM wants to brake harder than the log).
+    - REACTIVE: a = clip(min(a_track, a_IDM), -b_max, max(a_max, a_ff)), a_track = a_ff + k_s (s_log - s) +
+      k_v (v_log - v), a_ff = 1 s moving average of the logged acceleration (2 Hz positions), clipped to +-3 m/s^2.
+    - Back to REPLAY after SNAP["free_s"] without such a trigger and with |s - s_log| < 0.3 m, |v - v_log| < 0.3 m/s. pedestrians, cyclists, static / short / reversing vehicles
     replay the log. Leader = the nearest object physically on the agent's path ahead (any corner within
     width/2 + 0.3 m of the path, in the window [s, s + H], H = max(30 m, v T + 20 m)), including the ego by its
     current state (no anticipation, no plan). All accelerations come from the previous state, then all agents are
@@ -808,6 +829,7 @@ class ReactiveTraffic:
                 if eb.intersects(box(x, y, yaw, a.length, a.width)):      # overlaps the ego: replay until clear
                     continue
                 a.active = True
+                a.replay_t = self.t
                 self._sync_object(a)
 
     def states(self):
@@ -896,22 +918,17 @@ class ReactiveTraffic:
         ego_dev = (ego_now is not None and self.t < len(sdc["valid"]) and bool(sdc["valid"][self.t])
                    and np.hypot(ego_now[0] - sdc["position"][self.t][0], ego_now[1] - sdc["position"][self.t][1])
                    > DEVIATION_M)
-        state_dev = {a.oid: abs(a.s - a.log_state(self.t - 1)[0]) > DEVIATION_M for a in act}
+        prev_state = {a.oid: a.state for a in act}
         # Timing: this runs after env.step, so episode_step (self.t) is already the new step n, while the agents'
-        # states still belong to n - 1: track the log at n - 1 and integrate to n.
+        # states still belong to n - 1: compare with the log at n - 1 and integrate to n.
         t_state = self.t - 1
         for a in act:
             s_log, v_log = a.log_state(t_state)
             if t_state >= a.t1:
                 s_log, v_log = a.path_len, 0.0
-            a_track = a.log_accel(t_state) + IDM["k_s"] * (s_log - a.s) + IDM["k_v"] * (v_log - a.v)
+            a_ff = a.log_accel(t_state)
+            a_track = a_ff + IDM["k_s"] * (s_log - a.s) + IDM["k_v"] * (v_log - a.v)
             lead, ego_on = leaders[a.oid]
-            a.free_steps = 0 if lead is not None else a.free_steps + 1
-            if lead is not None:
-                a.replaying = False                      # leave replay as soon as a leader appears
-            elif (a.free_steps * DT >= SNAP["free_s"] and abs(a.s - s_log) < SNAP["ds"]
-                  and abs(a.v - v_log) < SNAP["dv"]):
-                a.replaying = True
             free = IDM["a_max"] * (1 - (a.v / a.v0) ** IDM["delta"])
             if lead is None:
                 a_idm = free
@@ -921,14 +938,21 @@ class ReactiveTraffic:
                 s_star = IDM["s0"] + max(0.0, a.v * IDM["T"] + a.v * dv / (2 * np.sqrt(IDM["a_max"] * IDM["b"])))
                 a_idm = free - IDM["a_max"] * (s_star / max(gap, 0.1)) ** 2
             a.a_track, a.a_idm, a.leader = a_track, a_idm, (lead[2] if lead else None)
-            deviating = lead is not None and ((lead[2] == EGO_ID and ego_dev) or state_dev.get(lead[2], False))
+            deviating = lead is not None and ((lead[2] == EGO_ID and ego_dev) or prev_state.get(lead[2]) == "REACTIVE")
+            trigger = deviating and a_idm < a_ff
             a.leader_deviating = deviating
-            if deviating:
-                acc[a.oid] = float(np.clip(min(a_track, a_idm), -IDM["b_max"], IDM["a_max"]))
-            else:                                        # leader as logged (or none): track the own log
-                acc[a.oid] = float(np.clip(a_track, -IDM["b_max"], max(IDM["a_max"], a.log_accel(t_state))))
+            if a.state == "REPLAY" and trigger:
+                a.state, a.free_steps = "REACTIVE", 0
+            elif a.state == "REACTIVE":
+                a.free_steps = 0 if trigger else a.free_steps + 1
+                if (a.free_steps * DT >= SNAP["free_s"] and abs(a.s - s_log) < SNAP["ds"]
+                        and abs(a.v - v_log) < SNAP["dv"]):
+                    a.state = "REPLAY"
+            if a.state == "REACTIVE":
+                acc[a.oid] = float(np.clip(min(a_track, a_idm), -IDM["b_max"], max(IDM["a_max"], a_ff)))
+                a.min_acc = min(a.min_acc, acc[a.oid])
+                self.binding_steps += 1                  # (stat: agent-steps in REACTIVE state)
             self.active_steps += 1
-            self.binding_steps += deviating and a_idm < a_track
             # ego on the path ahead: since when (for the unsafe cut-in rule)
             if ego_on:
                 a.ego_on_path_since = a.ego_on_path_since if a.ego_on_path_since is not None else self.t
@@ -939,8 +963,11 @@ class ReactiveTraffic:
             else:
                 self.deadlock_steps[a.oid] = 0
         for a in act:                                   # integrate all together
-            if a.replaying and self.t < a.t1:           # exact replay: take the logged state at step n
+            if a.state == "REPLAY" and self.t < a.t1:   # exact replay: the logged state at step n
                 a.s, a.v = a.log_state(self.t)
+                a.replay_t = self.t
+            elif a.state == "REPLAY":                   # log ended: stay at the path end
+                a.s, a.v = a.path_len, 0.0
             else:
                 a.v = float(np.clip(a.v + acc[a.oid] * DT, 0.0, a.v0))
                 a.s = float(min(a.s + a.v * DT, a.path_len))

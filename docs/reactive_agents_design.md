@@ -106,3 +106,20 @@ About 2–3 days: speed law and kinematics, 0.5 d; leader projection, swept ego 
 
 Open question: should the ego's planned trajectory (the swept check) be visible to agents? It is a mild "agents read the planner's
 mind" effect. The alternative is a constant-velocity extrapolation of the ego, which is more realistic and is the default I'd suggest.
+
+## 6. Stage-1 implementation notes (2026-11-07)
+Implemented in `sim/closed_loop.py` (`ReactiveTraffic`, `LogPathAgent`), flag `--reactive idm`.
+- **Two-state rule (user decision, replaces the position-threshold rule):**
+  - **REPLAY:** the agent replays its log exactly, using the logged pose including the annotated heading. There is no tracking and no feed-forward.
+  - **Switch to REACTIVE:** when its leader is "deviating" (the ego more than 0.3 m from its logged position at the same
+    time, or an agent in REACTIVE state) **and** a_IDM < a_ff, i.e. IDM wants to brake harder than the log. The a_IDM
+    condition is applied to both triggers; read literally, an off-log ego far ahead would also trigger the switch.
+  - **REACTIVE:** `a = clip(min(a_track, a_IDM), −b_max, max(a_max, a_ff))`, with `a_track = a_ff + k_s Δs + k_v Δv`.
+    a_ff is a centred 1 s moving average of the logged acceleration (from the 2 Hz positions), clipped to ±3 m/s².
+  - **Back to REPLAY:** after 1 s without such a trigger, and with |Δs| < 0.3 m and |Δv| < 0.3 m/s.
+  - **Why:** a reaction that starts only when something actually deviates cannot start a chain reaction from logged gaps
+    that are tighter than s₀ + vT, or from start-up transients in the interpolated log. The earlier rules failed on both.
+- **Parameters:** IDM at the design-doc values in section 2, b_max = 6 m/s².
+- **Fixed:** a one-step timing offset. The agents were tracked against the log one sim step out of phase.
+- **Not in stage 1:** the swept-footprint anticipation of the ego, the deadlock backstop, and the cut-in validation case.
+
