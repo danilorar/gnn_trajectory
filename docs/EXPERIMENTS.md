@@ -26,6 +26,8 @@ Checkpoints: `checkpoints/<run>/v2_seed<N>_best.pth` + `.json`; logs: `outputs/t
 | e32 | 2026-11-06 (pod) | (d) with 32 predicted agents | (d) flags + `--predict-agents 32` | 36 / 51 | 1.222 | Moving top-1 ADE 2.520 (16 shared slots); follower direction ✓ |
 | e63 | 2026-11-06 (pod) | (d) with 63 predicted agents (all slots but ego) | (d) flags + `--predict-agents 63` | 26 / 41 | 1.228 | Moving top-1 ADE 2.606 (16 shared slots); follower direction ✓ |
 | **Model selection** | 2026-11-06 | Val, rule pre-stated (Amendment 1 (2)) | `train_model.py --evaluate-only --eval-slots 16` | – | – | **d_rerun chosen**: best val moving-agent top-1 ADE (2.462 vs e32 2.520, e63 2.606); all pass the follower direction check |
+| v2_d_seed123 | 2026-11-07 (pod) | (d) rerun, seed 123 | d_rerun flags + `--seed 123` (no `--eval-test`; torch 2.8.0+cu128) | 34 / 49 | 1.232 (plan off 1.260) | Variance seeds for d_rerun; not used for selection |
+| v2_d_seed2026 | 2026-11-07 (pod) | (d) rerun, seed 2026 | d_rerun flags + `--seed 2026` (no `--eval-test`; torch 2.8.0+cu128) | 21 / 36 | 1.241 (plan off 1.271) | Variance seeds for d_rerun; not used for selection. 3 seeds (42/123/2026): 1.239 ± 0.006 (plan off 1.271 ± 0.011) |
 
 Notes
 - Follower test (val, 20 scenes, 6 s travel real / brake / accel): d_rerun 30.7 / 25.3 / 36.7 m, e32 29.5 / 23.3 / 35.5 m,
