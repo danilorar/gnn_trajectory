@@ -45,7 +45,9 @@ within 2 s). WM = v2_d_rerun unless noted. Results: `outputs/sim/<run>/report.md
 | mini dev runs | 2026-11-06 | 10 mini | v2_d (ep 28), then v2_d_rerun | Development set (weights chosen here) |
 | test150 (v1) | 2026-11-06 | 146 test | MetaDrive ego 4.52 x 1.85 m, stopped-ego collisions at fault | Superseded (classifier false positives) |
 | test150_v2 | 2026-11-06 | 146 test | Zoe ego 4.08 x 1.73 m, ego < 0.5 m/s not at fault, near-miss metrics | Superseded: order-dependent (MetaDrive physics state across resets; 1 of 15 re-rendered scenes changed) |
-| test150_v3 | 2026-11-06 | 146 test | v2 + fresh env per scene (deterministic), initial-overlap class, at-fault diagnosis | Current non-reactive result |
+| test150_v3 | 2026-11-06 | 146 test | v2 + fresh env per scene (deterministic), initial-overlap class, at-fault diagnosis | Superseded by v4 (footprint changed) |
+| test150_v4 | 2026-11-07 | 146 test | Final replay: covering footprints, frozen setup | At fault CV 1 / WM 0; rear-ended 14 / 16; close-call WM − CV −4.7 pp [−7.6, −2.1] |
+| test150_reactive | 2026-11-07 | 146 test | **Pre-registered reactive run** (two-state rule) | **Decision: WM is safer** (close-call 97.5% CI [−8.0, −2.1] pp, p = 1e-4; at fault −0.007 [−0.027, 0.000], p = 0.32; progress CI [−0.005, +0.006]). Report: `outputs/sim/test150_final_report.md` |
 | dev100 | 2026-11-06 | 100 val-split scenes (`sim/scene_lists/dev100.json`) | footprint = circles covering each box (real sizes), tracking error | Planner development / crash diagnosis (never test). At fault CV 3 / WM 1, all 'no safe plan existed' (risk first seen 0.4–0.8 s before); 0 'zero predicted risk'; tracking p95 0.24 m |
 | reactive_dev (stage 1) | 2026-11-07 | mini + dev100 (never test) | `--reactive idm`: log-path IDM agents; IDM tuned on dev100 (3 attempts; final s0 1.0, T 0.8, a_max 3.0, b 3.0, v0 x1.5) | Validation (a) fails (8 s median 0.65 m / p95 3.2 m; tracking law lags, not IDM), (b) passes (0/20 vs replay 18/20); dev100 reactive: rear-ended 0.23 -> 0.02 (CV), 0.24 -> 0.01 (WM); WM close-call -5.1 pp (p 3e-5). Report: `outputs/sim/reactive_dev/report.md`. Pre-registered reactive test NOT run (needs (a) to pass first) |
 | reactive_dev (deviation rule) | 2026-11-07 | mini + dev100 (never test) | IDM only when the leader deviates > 0.3 m from its log; design-doc IDM | Failed on mini: 8 s p95 9.2 m (start-up transients > 0.3 m trigger chain reactions); replaced by the two-state rule |
@@ -129,10 +131,9 @@ Check (d): the logged ego driven 10% slower along its logged route, agents in `-
 - 0 new agent–agent overlaps (not in the log), or each one explained and shown not to be caused by the reaction rule.
 - Max agent deceleration ≤ 6 m/s² (b_max) is allowed. The number of scenes that hit the cap is reported as a limitation.
 
-## Next steps (handoff, 2026-11-07, two-state rule)
-1. Reactive two-state rule: (a) and (b) pass on mini + dev100; (d) (ego 10% slower) fails on dev100: 1 rear-end
-   (scene-0219, the hitting agent never reacted), 2 new agent-agent overlaps (0045, 0238), max decel at b_max in 13 scenes
-   (late, hard reactions without anticipation). Report: `outputs/sim/reactive_dev/report.md` (last section).
-2. Decision needed before the final test (replay v4 + `--reactive idm`): accept (d) as is, or fix it first, e.g. find
-   why scene-0219's agent did not react, or add stage-2 anticipation.
-3. Open: the WM's follower reaction is too weak.
+## Next steps (handoff, 2026-11-07, after the final test)
+1. Done: final test (replay v4 + pre-registered reactive run). Decision: WM is safer, on the close-call co-primary
+   endpoint; at fault shows no detectable difference (1 event). Report: `outputs/sim/test150_final_report.md`.
+2. Done after the test: `LogPathAgent.eligible` now also requires the ScenarioNet type VEHICLE (no simulation change).
+3. Open: reactive stage 2 (swept ego footprint, merge anticipation); the WM's follower reaction is too weak; coverage
+   beyond 16 slots.

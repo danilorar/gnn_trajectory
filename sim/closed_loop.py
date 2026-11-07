@@ -710,7 +710,7 @@ class LogPathAgent:
                 dirs = np.arctan2(d[mv, 1], d[mv, 0])
                 self.reversing = np.mean(np.cos(dirs - heading[1:][mv]) < 0) > 0.5
         disp = float(np.linalg.norm(pos[-1] - pos[0])) if len(pos) else 0.0
-        self.eligible = (self.category.startswith("vehicle.") and disp >= 2.0 and self.v_max_log >= 0.5
+        self.eligible = (track["type"] == "VEHICLE" and self.category.startswith("vehicle.") and disp >= 2.0 and self.v_max_log >= 0.5
                          and not self.reversing and (self.t1 - self.t0) >= 2.0 / sim_dt and self.path_len >= 5.0)
         if self.eligible:
             n = max(2, int(np.ceil(self.path_len / 0.5)) + 1)
