@@ -20,7 +20,7 @@ pre-registered in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
 *The same scene (nuScenes mini scene-1094, a development scene) with reactive agents, planned twice. Every 0.5 s the
 planner scores 35 candidate plans (thin blue) against the predicted futures of nearby agents (red: vehicles, orange:
 pedestrians; opacity = probability) and drives the cheapest one (thick green).
-**Left:** with constant-velocity predictions the conflict shows up only about 0.6 s ahead, when no safe plan is left, and the ego hits the rider (5.7 s).
+**Left:** with constant-velocity predictions the conflict shows up only 0.2 s ahead, when every plan is already risky, and the ego hits the rider (5.7 s).
 **Right:** the world model predicts the crossing, so the chosen plan avoids it.*
 
 <p align="center">
