@@ -68,3 +68,20 @@ At-fault events in reactive mode (all 'no safe plan existed', risk first seen 0.
 1. Add a feed-forward of the logged acceleration to `a_track` (and/or raise k_v), then re-run (a): expected to remove most of the median error. This is a change to the speed law, not IDM tuning.
 2. Stage 2: swept-footprint anticipation of the ego (cut-in case), deadlock backstop, snap-back hysteresis.
 3. Only after (a) passes: freeze the parameters and run the pre-registered reactive test (docs/EXPERIMENTS.md). No test run was started.
+
+
+## Update 2026-11-07: feed-forward + snap-back + timing fix (approved changes), rerun of (a) and (b)
+
+Changes: a_track = a_log + k_s Δs + k_v Δv (a_log from the 2 Hz positions); snap back to exact replay after 1 s
+without a leader within H and |Δs| < 0.3 m, |Δv| < 0.3 m/s. Bug fixed on the way: the agents were tracked one sim
+step out of phase with the log (≈ v · 0.1 s error), which caused most of the overnight median error. IDM parameters
+unchanged (attempt 3; note they were tuned while the timing bug was present).
+
+| set | 1 / 3 / 5 / 8 s median [m] | 8 s p95 [m] | agents > 1 m at 8 s | IDM binding | new agent–agent overlaps (log) | expert at fault | (b) collisions reactive / replay |
+|---|---|---|---|---|---|---|---|
+| mini | 0.10 / 0.17 / 0.10 / 0.04 | 2.18 | 17% | 11% | 3 (1) | 0 | 0 / 1 (1 case) |
+| dev100 | 0.03 / 0.06 / 0.04 / 0.03 | 2.70 | 10% | 10% | 20 (18) | 3 (scene-0005 bus, car; scene-0159 truck) | 0 / 18 (20 cases) |
+
+**Verdict: (a) still fails** (median target met, p95 < 1 m and 0 new agent–agent overlaps not met; the expert is not
+~0 at fault on dev100). (b) passes. **No test run was started.** The tail comes from the ~10% of agent-steps where
+IDM binds (leader interactions), with parameters chosen before the timing fix.

@@ -120,10 +120,10 @@ no tie). This checkpoint is fixed for the reactive run.
 
 The pass criterion in step 1 is written out here so that it is fixed. Earlier, the follower test was only read by eye.
 
-## Next steps (handoff, 2026-11-07)
-1. Done: checkpoint recorded in Amendment 1 (2) (d_rerun); all commits pushed (a23ec60).
-2. Reactive agents stage 1 (`--reactive idm`): validation (a) fails (8 s median 0.65 m, p95 3.2 m); (b) passes.
-   Next: add a feed-forward of the logged acceleration to a_track (speed-law change, needs the user's OK), re-run
-   `sim_check.py reactive-check` on mini + dev100. Report: `outputs/sim/reactive_dev/report.md`.
-3. Only after (a) passes: freeze the IDM parameters and run the pre-registered reactive test on test150.
-4. Open: the WM's follower reaction is too weak (see Notes); stage 2 of reactive agents (swept ego footprint).
+## Next steps (handoff, 2026-11-07, after the feed-forward rerun)
+1. Reactive agents: feed-forward + snap-back + timing fix in (aecf5a8). Validation (a) still fails on dev100: 8 s median
+   0.03 m (ok) but p95 2.7 m, 20 new agent-agent overlaps, expert 3 at fault; (b) passes (0/20). See
+   `outputs/sim/reactive_dev/report.md` (update section).
+2. Decision needed: the IDM parameters were tuned while the timing bug was present; re-tuning them (or a different
+   tail fix) needs the user's OK. The pre-registered reactive test and the replay v4 test are NOT run.
+3. Open: the WM's follower reaction is too weak; reactive stage 2 (swept ego footprint).
