@@ -23,7 +23,7 @@ seconds?
 Watch the rider (purple).
 
 <p align="center">
-  <img src="assets/closed_loop_cv_vs_wm.gif" width="960" alt="The same nuScenes scene planned twice: with constant-velocity predictions the ego hits a pedestrian on a personal mobility device; with world-model predictions it picks a plan without collision">
+  <img src="assets/closed_loop_demo.gif" width="960" alt="The same nuScenes scene planned twice: with constant-velocity predictions the ego hits a pedestrian on a personal mobility device; with world-model predictions it picks a plan without collision">
 </p>
 
 *The same street scene (nuScenes mini scene-1094, a development scene; other road users react to our car), driven

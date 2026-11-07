@@ -1116,7 +1116,7 @@ if __name__ == "__main__":
     p.add_argument("--data", default=str(PROJECT_ROOT / "sim/scenarios/nuscenes_mini"))
     p.add_argument("--index", type=int, default=8, help="scenario index (8 = mini scene-1094)")
     p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
-    p.add_argument("--out", type=Path, default=PROJECT_ROOT / "assets/closed_loop_cv_vs_wm.gif")
+    p.add_argument("--out", type=Path, default=PROJECT_ROOT / "assets/closed_loop_demo.gif")
     p.add_argument("--reactive", choices=("off", "idm"), default="idm")
     p.add_argument("--follow", type=float, default=35.0, help="camera half-width around the ego [m]")
     p = sub.add_parser("reactive-check")
