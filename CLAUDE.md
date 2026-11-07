@@ -17,11 +17,13 @@ v2 = scene transformer (branch v2-transformer). See docs/CODE_GUIDE.md for file-
 
 ## Data splits — never break these
 - train = model training; val = model selection and all tuning; test = final numbers only.
-- Never evaluate on the test split (open or closed loop) unless the user explicitly asks.
+- Test scenes and the test split may be run only for the final evaluation or for reproducibility checks of an
+  evaluation already run; never for tuning, planner changes or model selection.
 - Closed-loop test set = sim/scenarios/nuscenes_test150 (146 scenes). The 10 mini scenes are
   the planner development set; cost weights are tuned only there and then frozen.
 
 ## Rules
+- All training runs are listed in docs/EXPERIMENTS.md; add a row for every new run.
 - Never commit or upload nuScenes data, images or processed samples (data/ is git-ignored).
 - Ask before: deleting files, downloads > 5 GB, anything that costs money (pods, APIs).
 - Launch every training run with `systemd-inhibit` (the laptop must not sleep mid-run).

@@ -3,7 +3,7 @@
 Bins include endpoint displacement >=5 m. ADE and FDE independently
 select their best trajectory mode. This script never trains a model.
 
-v2 only (pass --dataset .../nuscenes_val_...pkl):
+v2 only (val split by default):
   --examples PNG     grid of example predictions, 2 per turn bin
   --follower-test D  does the ego plan reach a car following the ego? (real / braking / accelerating plan)
   --cv-baseline      constant-velocity baseline vs the model (target, moving agents, near-ego agents)
@@ -33,8 +33,11 @@ from utils.models import (
 )
 from utils.training_utils import multimodal_metrics, read_manifest, set_seed
 
-DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
-DATASET_V2 = PROJECT_ROOT / "data/processed_v2/nuscenes_test_prediction_samples_map.pkl"
+# Default: the val split. The test split only with --eval-test (final evaluation / reproducibility checks).
+DATASET = PROJECT_ROOT / "data/processed/nuscenes_val_prediction_samples_map.pkl"
+DATASET_V2 = PROJECT_ROOT / "data/processed_v2/nuscenes_val_prediction_samples_map.pkl"
+TEST_DATASET = PROJECT_ROOT / "data/processed/nuscenes_test_prediction_samples_map.pkl"
+TEST_DATASET_V2 = PROJECT_ROOT / "data/processed_v2/nuscenes_test_prediction_samples_map.pkl"
 LABELS = ("0-15 deg", "15-30 deg", "30-60 deg", "60+ deg")
 
 
@@ -82,7 +85,9 @@ def main():
         "--model", choices=("multimodal_map", "multimodal_map_gru", "v2"),
         help="Default: saved model name, or multimodal_map_gru",
     )
-    parser.add_argument("--dataset", type=Path, help="Default: the v1 or v2 test split")
+    parser.add_argument("--dataset", type=Path, help="Default: the v1 or v2 val split (test split with --eval-test)")
+    parser.add_argument("--eval-test", action="store_true",
+                        help="Use the test split (off by default: final evaluation / reproducibility checks only)")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output", type=Path, help="Optional new JSON summary")
@@ -132,7 +137,12 @@ def main():
     device = torch.device(device)
 
     if args.dataset is None:
-        args.dataset = DATASET_V2 if model_name == "v2" else DATASET
+        if args.eval_test:
+            args.dataset = TEST_DATASET_V2 if model_name == "v2" else TEST_DATASET
+        else:
+            args.dataset = DATASET_V2 if model_name == "v2" else DATASET
+    elif "_test_" in args.dataset.name and not args.eval_test:
+        parser.error(f"{args.dataset.name} is the test split: pass --eval-test (final evaluation only)")
     top1 = None
     if args.timing:
         timing(args, device, load_v2(args.checkpoint, device))
