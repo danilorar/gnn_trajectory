@@ -13,6 +13,15 @@ tested in two settings: other agents replay the log, or they react to the ego (l
 Settings were chosen on val and the dev scenes only, and test was looked at once at the end; the analysis was
 pre-registered in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
 
+### Same street scene, two self-driving planners
+
+Our car (green) re-plans every 0.5 s. Before each move it asks: where will the other road users be in the next 6
+seconds?
+- **Left:** it assumes everyone keeps going straight at the same speed.
+- **Right:** it asks our learned world model, trained on real nuScenes driving.
+
+Watch the rider (purple).
+
 <p align="center">
   <img src="assets/closed_loop_cv_vs_wm.gif" width="960" alt="The same nuScenes scene planned twice: with constant-velocity predictions the ego hits a pedestrian on a personal mobility device; with world-model predictions it picks a plan without collision">
 </p>

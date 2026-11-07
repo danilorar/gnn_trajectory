@@ -1088,30 +1088,8 @@ def showcase(data_dir, index, checkpoint, out, reactive, follow=35.0):
             x += p_.width
         ImageDraw.Draw(canvas).line([(parts[0].width, 0), (parts[0].width, h)], fill=(160, 160, 160), width=2)
         frames.append(canvas.quantize(colors=128))
-    # title card: what the viewer is about to see
-    from PIL import ImageFont
-    w, h = frames[0].size
-    card = Image.new("RGB", (w, h), "white")
-    d = ImageDraw.Draw(card)
-    try:
-        big = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
-        small = ImageFont.truetype("DejaVuSans.ttf", 19)
-    except OSError:
-        big = small = ImageFont.load_default()
-    lines = [("Same street scene, two self-driving planners", big), ("", small),
-             ("Our car (green) re-plans every 0.5 s. Before each move it asks:", small),
-             ("where will the other road users be in the next 6 seconds?", small), ("", small),
-             ("Left: it assumes everyone keeps going straight at the same speed.", small),
-             ("Right: it asks our learned world model, trained on real nuScenes driving.", small), ("", small),
-             ("Watch the rider (purple).", big)]
-    y = h // 2 - 150
-    for text, font in lines:
-        tw = d.textlength(text, font=font)
-        d.text(((w - tw) / 2, y), text, fill=(30, 30, 30), font=font)
-        y += 40 if font is big else 30
-    frames = [card.quantize(colors=128)] + frames
     out.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(out, save_all=True, append_images=frames[1:], duration=[3500] + [450] * (len(frames) - 2) + [2500],
+    frames[0].save(out, save_all=True, append_images=frames[1:], duration=[450] * (len(frames) - 1) + [2500],
                    loop=0, optimize=True)
     print(f"saved {out} ({out.stat().st_size / 1e6:.1f} MB, {len(frames)} frames) | " + " | ".join(summary))
 
