@@ -712,6 +712,29 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
         stats[name] = dict(n=len(d), mean=m_, ci=[lo, hi], wilcoxon_p=wil(d))
         lines.append(f"| {name} | {len(d)} | {m_:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {stats[name]['wilcoxon_p']:.3g} |")
     lines += ["", "Progress ratio excludes scenes where the logged ego does not move (n/a).", ""]
+    if reactive == "idm":                  # pre-registered decision (docs/EXPERIMENTS.md, Amendment 1)
+        def boot_ci(d, level):
+            d = np.asarray(d, float)
+            means = np.random.default_rng(0).choice(d, (10_000, len(d)), replace=True).mean(1)
+            return float(np.percentile(means, (100 - level) / 2)), float(np.percentile(means, 100 - (100 - level) / 2))
+        co = {}
+        for name, d in (("at-fault collisions / scene", d_af), ("close-call share (steps < 1 m)", d_sh)):
+            lo, hi = boot_ci(d, 97.5)
+            co[name] = dict(mean=float(np.mean(d)), ci97_5=[lo, hi], wilcoxon_p=wil(d), below_zero=hi < 0)
+        p_lo, p_hi = boot_ci(d_pr, 95)
+        progress_ok = p_lo > -0.02
+        safer = any(v["below_zero"] for v in co.values()) and progress_ok
+        stats["preregistered"] = dict(co_primary=co, progress_ci95=[p_lo, p_hi], progress_ok=progress_ok, wm_safer=safer)
+        lines += ["## Pre-registered decision (Amendment 1: co-primary endpoints, alpha = 0.025 each)", "",
+                  "| co-primary endpoint | mean WM - CV | bootstrap 97.5% CI (seed 0) | Wilcoxon p | CI below 0 |",
+                  "|---|---|---|---|---|"]
+        for name, v in co.items():
+            lines.append(f"| {name} | {v['mean']:+.4f} | [{v['ci97_5'][0]:+.4f}, {v['ci97_5'][1]:+.4f}] | "
+                         f"{v['wilcoxon_p']:.3g} ({'<' if v['wilcoxon_p'] < 0.025 else '>='} 0.025) | {v['below_zero']} |")
+        lines += ["", f"Progress ratio WM - CV: 95% CI [{p_lo:+.4f}, {p_hi:+.4f}]; not worse by > 0.02: {progress_ok}.", "",
+                  f"**Decision: {'WM is safer' if safer else 'no detectable difference'}** "
+                  "(rule: either co-primary 97.5% CI entirely below 0 and progress not worse by > 0.02).", "",
+                  f"At-fault events: CV {sum(m['at_fault'] for m in cv)}, WM {sum(m['at_fault'] for m in wm)}.", ""]
     lines += ["## Per map", "", "| map | scenes | planner | at-fault / scene | rear-ended / scene | off-road | progress |",
               "|---|---|---|---|---|---|---|"]
     for mp in sorted({m["map"] for m in cv}):
