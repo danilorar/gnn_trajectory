@@ -835,6 +835,7 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
         errs = {1: [], 3: [], 5: [], 8: []}
         along = {1: [], 3: [], 5: [], 8: []}
         ep_max, new_coll, log_coll, bind, n_agents, standoff = [], 0, 0, [], 0, 0.0
+        expert_events = []
         for i in range(n):
             env = ScenarioEnv({**base, "num_scenarios": n, "data_directory": str(data_dir),
                                "agent_policy": ReplayEgoCarPolicy})
@@ -844,6 +845,7 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
             finally:
                 env.close()
             R = m["reactive"]
+            expert_events += [(m["scene"], c["t"], c["category"], c["kind"]) for c in m["collided"]]
             n_agents += R["n_agents"]
             new_coll += R["new_agent_collisions"]
             log_coll += R["log_agent_collisions"]
@@ -866,6 +868,9 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
                      share_agents_episode_err_above_1m=float(np.mean(np.asarray(ep_max) > 1.0)) if ep_max else None,
                      idm_binding_share=float(np.mean(bind)), new_agent_collisions=new_coll,
                      log_agent_collisions=log_coll, max_ego_standoff_s=standoff,
+                     expert_at_fault=sum(e[3] == "at_fault" for e in expert_events),
+                     expert_not_at_fault=sum(e[3] == "not_at_fault" for e in expert_events),
+                     expert_events=expert_events,
                      pass_target=bool(a_res["8s"]["median"] is not None and a_res["8s"]["median"] < 0.2
                                       and a_res["8s"]["p95"] < 1.0 and new_coll == 0))
         print(f"[{name}] (a) expert drives the log: " + json.dumps(a_res), flush=True)
