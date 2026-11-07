@@ -712,6 +712,29 @@ def evaluate_test(data_dir, checkpoint, out_dir, seed=0, compare=None, reactive=
         stats[name] = dict(n=len(d), mean=m_, ci=[lo, hi], wilcoxon_p=wil(d))
         lines.append(f"| {name} | {len(d)} | {m_:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {stats[name]['wilcoxon_p']:.3g} |")
     lines += ["", "Progress ratio excludes scenes where the logged ego does not move (n/a).", ""]
+    if reactive == "idm":                  # pre-registered decision (docs/EXPERIMENTS.md, Amendment 1)
+        def boot_ci(d, level):
+            d = np.asarray(d, float)
+            means = np.random.default_rng(0).choice(d, (10_000, len(d)), replace=True).mean(1)
+            return float(np.percentile(means, (100 - level) / 2)), float(np.percentile(means, 100 - (100 - level) / 2))
+        co = {}
+        for name, d in (("at-fault collisions / scene", d_af), ("close-call share (steps < 1 m)", d_sh)):
+            lo, hi = boot_ci(d, 97.5)
+            co[name] = dict(mean=float(np.mean(d)), ci97_5=[lo, hi], wilcoxon_p=wil(d), below_zero=hi < 0)
+        p_lo, p_hi = boot_ci(d_pr, 95)
+        progress_ok = p_lo > -0.02
+        safer = any(v["below_zero"] for v in co.values()) and progress_ok
+        stats["preregistered"] = dict(co_primary=co, progress_ci95=[p_lo, p_hi], progress_ok=progress_ok, wm_safer=safer)
+        lines += ["## Pre-registered decision (Amendment 1: co-primary endpoints, alpha = 0.025 each)", "",
+                  "| co-primary endpoint | mean WM - CV | bootstrap 97.5% CI (seed 0) | Wilcoxon p | CI below 0 |",
+                  "|---|---|---|---|---|"]
+        for name, v in co.items():
+            lines.append(f"| {name} | {v['mean']:+.4f} | [{v['ci97_5'][0]:+.4f}, {v['ci97_5'][1]:+.4f}] | "
+                         f"{v['wilcoxon_p']:.3g} ({'<' if v['wilcoxon_p'] < 0.025 else '>='} 0.025) | {v['below_zero']} |")
+        lines += ["", f"Progress ratio WM - CV: 95% CI [{p_lo:+.4f}, {p_hi:+.4f}]; not worse by > 0.02: {progress_ok}.", "",
+                  f"**Decision: {'WM is safer' if safer else 'no detectable difference'}** "
+                  "(rule: either co-primary 97.5% CI entirely below 0 and progress not worse by > 0.02).", "",
+                  f"At-fault events: CV {sum(m['at_fault'] for m in cv)}, WM {sum(m['at_fault'] for m in wm)}.", ""]
     lines += ["## Per map", "", "| map | scenes | planner | at-fault / scene | rear-ended / scene | off-road | progress |",
               "|---|---|---|---|---|---|---|"]
     for mp in sorted({m["map"] for m in cv}):
@@ -978,7 +1001,30 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
                      reactive_stays_behind=sum(r["reactive"]["stays_behind"] for r in rows))
         b_res["pass_target"] = bool(rows and b_res["reactive_collisions"] == 0)
         print(f"[{name}] (b) summary: {json.dumps(b_res)}", flush=True)
-        result["sets"][name] = dict(a=a_res, b=b_res, b_cases=rows)
+
+        # (d) the logged ego driven 10% slower (tracker on its logged route, 0.9 x logged speed)
+        d_rows = []
+        for i in range(n):
+            env = ScenarioEnv({**base, "num_scenarios": n, "data_directory": str(data_dir)})
+            try:
+                env.reset(seed=i)
+                m, _ = cl.run_scene(env, None, reactive=True, drive_log_scale=0.9)
+            finally:
+                env.close()
+            R = m["reactive"]
+            d_rows.append(dict(scene=m["scene"], new_overlaps=R["new_agent_collisions"], log_overlaps=R["log_agent_collisions"],
+                               max_decel=R["max_decel"], rear_ends=sum(c["kind"] == "not_at_fault" for c in m["collided"]),
+                               at_fault=sum(c["kind"] == "at_fault" for c in m["collided"]),
+                               cut_ins=sum(c.get("unsafe_cut_in", False) for c in m["collided"])))
+        d_res = dict(scenes=len(d_rows), new_agent_overlaps=sum(r["new_overlaps"] for r in d_rows),
+                     log_agent_overlaps=sum(r["log_overlaps"] for r in d_rows),
+                     max_decel=float(max(r["max_decel"] for r in d_rows)) if d_rows else 0.0,
+                     rear_ends=sum(r["rear_ends"] for r in d_rows), ego_at_fault=sum(r["at_fault"] for r in d_rows),
+                     scenes_with_rear_end=[r["scene"] for r in d_rows if r["rear_ends"]])
+        d_res["pass_target"] = bool(d_res["new_agent_overlaps"] == 0 and d_res["rear_ends"] == 0
+                                    and d_res["max_decel"] <= cl.IDM["b_max"] + 1e-6)
+        print(f"[{name}] (d) ego 10% slower: {json.dumps(d_res)}", flush=True)
+        result["sets"][name] = dict(a=a_res, b=b_res, b_cases=rows, d=d_res, d_rows=d_rows)
     tag = "_".join(f"{k}{v}" for k, v in idm_overrides.items()) or "doc"
     (out_dir / f"validation_{tag}.json").write_text(json.dumps(result, indent=1, default=str))
     print(f"saved {out_dir / f'validation_{tag}.json'}")
