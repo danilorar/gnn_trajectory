@@ -631,11 +631,10 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
 # Reactive agents, stage 1 (docs/reactive_agents_design.md): log-path IDM vehicles
 # ============================================================
 
-# Design-doc values: s0 = 2.0, T = 1.2, a_max = 1.5, b = 2.0, v0_factor = 1.1. Tuned on dev100 (validation (a) failed;
-# 3 attempts, outputs/sim/reactive_dev/report.md): attempt 3 = s0 1.0, T 0.8, a_max 3.0, b 3.0, v0_factor 1.5.
-# Not tuned: b_max, delta, the tracking gains k_s / k_v (not IDM parameters), v0_min, lateral_margin.
-IDM = dict(s0=1.0, T=0.8, a_max=3.0, b=3.0, b_max=6.0, delta=4.0, k_s=0.5, k_v=1.0, v0_factor=1.5, v0_min=3.0,
+# Design-doc values (the overnight tuning, done while a timing bug was present, was reverted on 2026-11-07).
+IDM = dict(s0=2.0, T=1.2, a_max=1.5, b=2.0, b_max=6.0, delta=4.0, k_s=0.5, k_v=1.0, v0_factor=1.1, v0_min=3.0,
            lateral_margin=0.3)
+DEVIATION_M = 0.3   # a leader "deviates from its log" above this (ego: distance to its logged position; agent: |s - s_log|)
 
 
 class _HoldPolicy:
@@ -750,7 +749,10 @@ class ReactiveTraffic:
     speed a = clip(min(a_track, a_IDM), -b_max, a_max), a_track = a_log + k_s (s_log - s) + k_v (v_log - v) with the
     logged acceleration a_log as feed-forward (from the 2 Hz positions). Snap-back hysteresis: after SNAP["free_s"]
     without a leader within H and with |s - s_log| < SNAP["ds"], |v - v_log| < SNAP["dv"], the agent replays its log
-    exactly until a leader appears again; pedestrians, cyclists, static / short / reversing vehicles
+    exactly until a leader appears again. Reaction rule: a_IDM is applied only if the leader deviates from its log
+    (the ego more than DEVIATION_M from its logged position, or a reactive agent with |s - s_log| > DEVIATION_M);
+    a leader that is "as logged" (replayed objects, agents and ego on their logs) is ignored and the agent tracks its
+    own log, a = clip(a_track, -b_max, max(a_max, a_log)), since its logged gap to that leader is already right; pedestrians, cyclists, static / short / reversing vehicles
     replay the log. Leader = the nearest object physically on the agent's path ahead (any corner within
     width/2 + 0.3 m of the path, in the window [s, s + H], H = max(30 m, v T + 20 m)), including the ego by its
     current state (no anticipation, no plan). All accelerations come from the previous state, then all agents are
@@ -889,6 +891,12 @@ class ReactiveTraffic:
             if log_time(a, lead[0]) <= log_time(b, lb[0]):
                 leaders[a.oid] = self._leader(a, objects, ignore=(b.oid,))
         acc = {}
+        ego_now = snapshot.get(EGO_ID)
+        sdc = self.scenario["tracks"][self.sdc]["state"]
+        ego_dev = (ego_now is not None and self.t < len(sdc["valid"]) and bool(sdc["valid"][self.t])
+                   and np.hypot(ego_now[0] - sdc["position"][self.t][0], ego_now[1] - sdc["position"][self.t][1])
+                   > DEVIATION_M)
+        state_dev = {a.oid: abs(a.s - a.log_state(self.t - 1)[0]) > DEVIATION_M for a in act}
         # Timing: this runs after env.step, so episode_step (self.t) is already the new step n, while the agents'
         # states still belong to n - 1: track the log at n - 1 and integrate to n.
         t_state = self.t - 1
@@ -913,9 +921,14 @@ class ReactiveTraffic:
                 s_star = IDM["s0"] + max(0.0, a.v * IDM["T"] + a.v * dv / (2 * np.sqrt(IDM["a_max"] * IDM["b"])))
                 a_idm = free - IDM["a_max"] * (s_star / max(gap, 0.1)) ** 2
             a.a_track, a.a_idm, a.leader = a_track, a_idm, (lead[2] if lead else None)
-            acc[a.oid] = float(np.clip(min(a_track, a_idm), -IDM["b_max"], IDM["a_max"]))
+            deviating = lead is not None and ((lead[2] == EGO_ID and ego_dev) or state_dev.get(lead[2], False))
+            a.leader_deviating = deviating
+            if deviating:
+                acc[a.oid] = float(np.clip(min(a_track, a_idm), -IDM["b_max"], IDM["a_max"]))
+            else:                                        # leader as logged (or none): track the own log
+                acc[a.oid] = float(np.clip(a_track, -IDM["b_max"], max(IDM["a_max"], a.log_accel(t_state))))
             self.active_steps += 1
-            self.binding_steps += a_idm < a_track
+            self.binding_steps += deviating and a_idm < a_track
             # ego on the path ahead: since when (for the unsafe cut-in rule)
             if ego_on:
                 a.ego_on_path_since = a.ego_on_path_since if a.ego_on_path_since is not None else self.t
