@@ -120,8 +120,10 @@ no tie). This checkpoint is fixed for the reactive run.
 
 The pass criterion in step 1 is written out here so that it is fixed. Earlier, the follower test was only read by eye.
 
-## Next steps (handoff, 2026-11-06)
-1. Done: e63 follower test passed (brake < real < accel); the Model selection row is final.
-2. Record the chosen checkpoint in Amendment 1 (2) before any reactive run (d_rerun, numbers in the Model selection row).
-3. Unpushed: local commits on v2-transformer (the user decides when to push).
-4. Open: the follower reaction is too weak (see Notes). Consider this before relying on the WM for followers.
+## Next steps (handoff, 2026-11-07)
+1. Done: checkpoint recorded in Amendment 1 (2) (d_rerun); all commits pushed (a23ec60).
+2. Reactive agents stage 1 (`--reactive idm`): validation (a) fails (8 s median 0.65 m, p95 3.2 m); (b) passes.
+   Next: add a feed-forward of the logged acceleration to a_track (speed-law change, needs the user's OK), re-run
+   `sim_check.py reactive-check` on mini + dev100. Report: `outputs/sim/reactive_dev/report.md`.
+3. Only after (a) passes: freeze the IDM parameters and run the pre-registered reactive test on test150.
+4. Open: the WM's follower reaction is too weak (see Notes); stage 2 of reactive agents (swept ego footprint).
