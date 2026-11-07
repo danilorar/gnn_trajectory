@@ -97,11 +97,11 @@ VIRTUAL_ENV=.venv_sim uv pip install torch --index-url https://download.pytorch.
     --batch-size 64 --lr 0.001 --seed 42 --checkpoint-dir checkpoints/v2_d_rerun
 ```
 
-**5. Validation evaluation.**
+**5. Validation evaluation.** `--evaluate-only` needs the same model flags as training.
 
 ```bash
-.venv/bin/python scripts/train_model.py --model v2 --evaluate-only \
-    --checkpoint checkpoints/v2_d_rerun/v2_seed42_best.pth
+.venv/bin/python scripts/train_model.py --model v2 --predict-agents 16 --ego-plan --target-split \
+    --plan-queries --plan-drop 0.2 --evaluate-only --checkpoint checkpoints/v2_d_rerun/v2_seed42_best.pth
 .venv/bin/python scripts/run_turn_angle_analysis.py --model v2 \
     --checkpoint checkpoints/v2_d_rerun/v2_seed42_best.pth --follower-test outputs/run_d_rerun
 ```
