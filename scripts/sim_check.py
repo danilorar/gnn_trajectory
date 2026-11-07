@@ -1031,6 +1031,56 @@ def reactive_check(data_dirs, out_dir, idm_overrides, cases_per_set=20):
     return result
 
 
+def showcase(data_dir, index, checkpoint, out, reactive, follow=35.0):
+    """Side-by-side GIF for the README: the same scene planned with constant-velocity predictions (left) and with the
+    world model (right), camera following the ego, legend, collision counter. Development scenes only."""
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import numpy as np
+    from PIL import Image, ImageDraw
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from metadrive.envs.scenario_env import ScenarioEnv
+    from metadrive.scenario.utils import get_number_of_scenarios
+    from sim import closed_loop as cl
+
+    n = get_number_of_scenarios(str(data_dir))
+    zoe = dict(vehicle_model="varying_dynamics", width=cl.EGO_SIZE_ZOE[0], length=cl.EGO_SIZE_ZOE[1])
+    base = dict(use_render=False, num_scenarios=n, data_directory=str(data_dir), horizon=10_000, log_level=50,
+                crash_vehicle_done=False, crash_object_done=False, crash_human_done=False, vehicle_config=zoe,
+                agent_configs={"default_agent": dict(use_special_color=True, spawn_lane_index=None, **zoe)})
+    tmp = OUT_DIR / "showcase"
+    tmp.mkdir(parents=True, exist_ok=True)
+    gifs, summary = [], []
+    for pred, title in ((cl.CVPredictor(), "Constant-velocity predictions"),
+                        (cl.WorldModelPredictor(checkpoint), "World-model predictions")):
+        env = ScenarioEnv(base)
+        try:
+            env.reset(seed=index)
+            path = tmp / f"{pred.name.lower()}_scene{index}.gif"
+            m, _ = cl.run_scene(env, pred, viz=path, reactive=reactive, viz_follow=follow, viz_title=title)
+        finally:
+            env.close()
+        gifs.append(Image.open(path))
+        summary.append(f"{pred.name}: at fault {m['at_fault']}, progress {m['progress_ratio']:.2f}")
+        print(f"{m['scene']} {summary[-1]}", flush=True)
+    frames = []
+    for i in range(min(g.n_frames for g in gifs)):
+        parts = []
+        for g in gifs:
+            g.seek(i)
+            parts.append(g.convert("RGB"))
+        w, h = sum(p_.width for p_ in parts), max(p_.height for p_ in parts)
+        canvas = Image.new("RGB", (w, h), "white")
+        x = 0
+        for p_ in parts:
+            canvas.paste(p_, (x, 0))
+            x += p_.width
+        ImageDraw.Draw(canvas).line([(parts[0].width, 0), (parts[0].width, h)], fill=(160, 160, 160), width=2)
+        frames.append(canvas.quantize(colors=128))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(out, save_all=True, append_images=frames[1:], duration=350, loop=0, optimize=True)
+    print(f"saved {out} ({out.stat().st_size / 1e6:.1f} MB, {len(frames)} frames) | " + " | ".join(summary))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="step", required=True)
@@ -1049,6 +1099,13 @@ if __name__ == "__main__":
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--throttle", type=float, default=0.2)
     p.add_argument("--steering", type=float, default=0.0)
+    p = sub.add_parser("showcase")
+    p.add_argument("--data", default=str(PROJECT_ROOT / "sim/scenarios/nuscenes_mini"))
+    p.add_argument("--index", type=int, default=8, help="scenario index (8 = mini scene-1094)")
+    p.add_argument("--checkpoint", default=str(PROJECT_ROOT / "checkpoints/v2_d_rerun/v2_seed42_best.pth"))
+    p.add_argument("--out", type=Path, default=PROJECT_ROOT / "assets/closed_loop_cv_vs_wm.gif")
+    p.add_argument("--reactive", choices=("off", "idm"), default="idm")
+    p.add_argument("--follow", type=float, default=35.0, help="camera half-width around the ego [m]")
     p = sub.add_parser("reactive-check")
     p.add_argument("--data", nargs="+", default=[str(PROJECT_ROOT / "sim/scenarios/nuscenes_mini"),
                                                  str(PROJECT_ROOT / "sim/scenarios/nuscenes_dev100")])
@@ -1089,6 +1146,10 @@ if __name__ == "__main__":
         plan(args.predictor, args.scenes, args.gif, args.viz, args.checkpoint,
              args.out or OUT_DIR / f"plan_{'_'.join(args.predictor)}.json", args.data, reactive=args.reactive,
              device=args.device)
+    elif args.step == "showcase":
+        if "test150" in args.data:
+            raise SystemExit("showcase is for development scenes only")
+        showcase(Path(args.data), args.index, args.checkpoint, args.out, args.reactive == "idm", args.follow)
     elif args.step == "reactive-check":
         if any("test150" in d for d in args.data):
             raise SystemExit("reactive-check is for the mini / dev scenes only, never test")

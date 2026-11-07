@@ -13,6 +13,31 @@ tested in two settings: other agents replay the log, or they react to the ego (l
 Settings were chosen on val and the dev scenes only, and test was looked at once at the end; the analysis was
 pre-registered in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
 
+<p align="center">
+  <img src="assets/closed_loop_cv_vs_wm.gif" width="960" alt="The same nuScenes scene planned twice: with constant-velocity predictions the ego hits a pedestrian on a personal mobility device; with world-model predictions it picks a plan without collision">
+</p>
+
+*The same scene (nuScenes mini scene-1094, a development scene) with reactive agents, planned twice. Every 0.5 s the
+planner scores 35 candidate plans (thin blue) against the predicted futures of nearby agents (red: vehicles, orange:
+pedestrians; opacity = probability) and drives the cheapest one (thick green).
+**Left:** with constant-velocity predictions the conflict shows up only about 0.6 s ahead, when no safe plan is left, and the ego hits the rider (5.7 s).
+**Right:** the world model predicts the crossing, so the chosen plan avoids it.*
+
+<p align="center">
+  <img src="assets/prediction_examples_val.png" width="960" alt="Eight val examples of six predicted modes against the ground truth, two per turn-angle bin">
+</p>
+
+*Open-loop predictions on val, 2 examples per turn-angle bin. Green: ground truth; orange: the 6 predicted modes (the
+number is the mode probability; solid = top mode); blue: 2 s of history.*
+
+<p align="center">
+  <img src="assets/follower_test_val.png" width="960" alt="Follower test: predicted futures of the car behind the ego under the real, braking and accelerating ego plans">
+</p>
+
+*The predictions depend on the ego's plan. The car behind the ego is predicted to slow down when the ego plans to brake
+(red) and to speed up when the ego plans to accelerate (blue). The reaction is weaker than it should be (see the
+limitations).*
+
 ## Results
 
 **Open loop (val, target minADE₆):** 1.239 ± 0.006 m over 3 seeds (42 / 123 / 2026; 1.271 ± 0.011 with the ego plan

@@ -332,7 +332,8 @@ CUT_IN_S = 2.0      # reactive mode: hit from behind within 2 s after the ego en
 
 
 def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
-              nearby_radius=30.0, device="cuda", reactive=False, drive_log_scale=None):
+              nearby_radius=30.0, device="cuda", reactive=False, drive_log_scale=None, viz_follow=None,
+              viz_title=None):
     """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
 
     shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
@@ -397,8 +398,10 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
                     pred_log.append(dict(step=step, ids=list(w_ids), paths=w_paths, probs=w_probs,
                                          wm_ids=set(wm.last_wm_ids), plan=dense[k].copy()))
                 if viz is not None:
-                    viz_frames.append(render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry,
-                                                            predictor.name, features))
+                    viz_frames.append(render_planning_frame(
+                        scene, ref, dense, k, paths, probs, ids, entry, predictor.name, features, follow=viz_follow,
+                        collisions=sum(1 for h in hits.values() if h[1]), trail=[p_[:2] for p_ in poses],
+                        title=viz_title, legend=viz_title is not None, ego_size=ego_size))
             act = tracker.action(x, y, yaw, v, plan, plan_t)
         _, _, _, _, info = env.step(act)
         plan_t += DT
@@ -580,18 +583,27 @@ def wm_prediction_before(pred_log, oid, hit_step, scenario, ego_size):
             "wm_actual_dist_to_ego_plan_m": float(np.linalg.norm(actual - ego))}
 
 
-def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, features, radius=40.0):
-    """Fixed camera on the scene's route; lanes, reference route (grey), 35 plans (thin), chosen plan (thick
-    green), current agents, predicted futures of nearby agents (opacity = prob), text box with the cost terms."""
+def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, features, radius=40.0,
+                          follow=None, collisions=0, trail=None, title=None, legend=False, ego_size=(1.85, 4.5)):
+    """Planning view: lanes, reference route (grey), 35 candidate plans (thin blue), chosen plan (thick green),
+    current agents, predicted futures of nearby agents (opacity = prob), text box with the cost terms.
+    Camera: fixed on the whole route (default), or follow = half-width in m of a window centred on the ego.
+    Optional: driven trail, collision counter, title and a legend (for the showcase GIF)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     route = ref.xy[ref.s <= max(ref.length, 1.0)]
-    lo, hi = route.min(0) - 30, route.max(0) + 30
-    span = (hi - lo).max()
-    mid = (lo + hi) / 2
-    lo, hi = mid - span / 2, mid + span / 2
+    if follow:
+        lo, hi = np.array(scene.ego[:2]) - follow, np.array(scene.ego[:2]) + follow
+    else:
+        lo, hi = route.min(0) - 30, route.max(0) + 30
+        span = (hi - lo).max()
+        mid = (lo + hi) / 2
+        lo, hi = mid - span / 2, mid + span / 2
     fig, ax = plt.subplots(figsize=(7, 7), dpi=90)
+    if trail is not None and len(trail) > 1:
+        tr = np.asarray(trail)
+        ax.plot(tr[:, 0], tr[:, 1], color="tab:green", lw=1.5, ls=":", alpha=0.8, zorder=6)
     for f in features.values():
         if f["type"].startswith("LANE_SURFACE"):
             pl = np.asarray(f["polyline"])[:, :2]
@@ -615,8 +627,20 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
                 if pr > 0.02:
                     pth = np.vstack([[x, y], paths[k, a, m_]])
                     ax.plot(pth[:, 0], pth[:, 1], color=color, lw=1.4, alpha=min(1.0, 0.1 + pr), zorder=4)
-    eb = box(ex, ey, scene.ego[2], 4.5, 1.85)
+    eb = box(ex, ey, scene.ego[2], ego_size[1], ego_size[0])
     ax.fill(*eb.exterior.xy, color="tab:green", zorder=7)
+    if collisions:
+        ax.text(0.98, 0.98, f"COLLISION ({collisions})", transform=ax.transAxes, va="top", ha="right", fontsize=12,
+                color="white", weight="bold", bbox=dict(facecolor="tab:red", edgecolor="none"), zorder=11)
+    if title:
+        ax.set_title(title, fontsize=12, weight="bold")
+    if legend:
+        handles = [plt.Line2D([], [], color="0.55", lw=5, alpha=0.45), plt.Line2D([], [], color="tab:blue", lw=1),
+                   plt.Line2D([], [], color="tab:green", lw=3.5), plt.Line2D([], [], color="tab:red", lw=1.4),
+                   plt.Line2D([], [], color="tab:orange", lw=1.4)]
+        ax.legend(handles, ["route", "35 candidate plans", "chosen plan (ego = green box)",
+                            "predicted vehicle futures", "predicted pedestrian futures"],
+                  loc="lower left", fontsize=7.5, framealpha=0.9)
     txt = (f"{name} planner   t = {entry['t']:.1f} s   ego {scene.ego[3]:.1f} m/s\n"
            f"chosen: speed {entry['speed']:.0f} m/s, offset {entry['offset']:+.2f} m\n"
            f"risk {entry['risk']:.2f}  progress {entry['progress']:.1f} m  comfort {entry['comfort']:.1f}  "
