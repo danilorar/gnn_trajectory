@@ -85,3 +85,20 @@ unchanged (attempt 3; note they were tuned while the timing bug was present).
 **Verdict: (a) still fails** (median target met, p95 < 1 m and 0 new agent–agent overlaps not met; the expert is not
 ~0 at fault on dev100). (b) passes. **No test run was started.** The tail comes from the ~10% of agent-steps where
 IDM binds (leader interactions), with parameters chosen before the timing fix.
+
+
+## Update 2026-11-07: two-state REPLAY / REACTIVE rule (final validation before test)
+
+| set | (a) 8 s median / p95 | (a) new agent–agent overlaps (log) | expert at fault | (b) collisions reactive / replay | (d) ego 10% slower: rear-ends | (d) new overlaps (log) | (d) max agent decel | (d) ego at fault |
+|---|---|---|---|---|---|---|---|---|
+| mini | 0.000 / 0.000 m | 0 (1) | 0 | 0 / 1 (1 case) | 0 | 0 (1) | 3.4 m/s² | 0 |
+| dev100 | 0.000 / 0.000 m | 0 (26) | 0 | 0 / 18 (20 cases) | **1** (scene-0219) | **2** (0045, 0238) | **6.0 m/s²** (= b_max, 13 scenes) | 9 |
+
+**Verdict: (a) and (b) pass; (d) fails** on dev100 (targets: 0 rear-ends, 0 new overlaps, max decel ≤ b_max).
+- **Rear-end in scene-0219:** the hitting object never left REPLAY (its max decel is 0). Either it is not an eligible
+  reactive vehicle (pedestrian, cyclist, parked, short or reversing track) or it never saw the slow ego as its leader.
+- **Deceleration at the b_max limit in 13 scenes:** agents react only once the slow ego is physically on their path
+  and IDM brakes harder than the log. Without anticipation (stage 2), those reactions are late and hard.
+- **Ego at fault (9):** the ego here drives blind (no planner), 10% slower than its log, so it meets replayed objects
+  and pedestrians at other times than in the log. This is not an agent problem and is not part of the (d) target.
+- **No test run was started.**
