@@ -102,3 +102,25 @@ IDM binds (leader interactions), with parameters chosen before the timing fix.
 - **Ego at fault (9):** the ego here drives blind (no planner), 10% slower than its log, so it meets replayed objects
   and pedestrians at other times than in the log. This is not an agent problem and is not part of the (d) target.
 - **No test run was started.**
+
+
+## Diagnosis of the (d) failures (2026-11-07, 45 min time-box, no design changes)
+
+- **scene-0219, rear-end:** the car that hit the slowed ego is **not an eligible reactive agent**. It creeps 3.9 m over the
+  whole scene (max logged speed 2.4 m/s), under the 5 m minimum path, so it replays. **By design.** By the recorded (d)
+  target, a rear-end only counts if the agent is eligible and had the ego as its leader; this one does not count.
+- **scene-0045, new overlap:** a REACTIVE car (delayed behind the slowed ego) and a **motorcycle**. ScenarioNet labels
+  nuScenes motorcycles and bicycles as `CYCLIST` (208 tracks in dev100), and cyclists replay by design. The replaying
+  motorcycle merges into the delayed car's path, and neither reacts. **By design; a stage-1 limitation**, since replay
+  objects cannot react and there is no merge anticipation.
+- **scene-0238, new overlap:** two REACTIVE cars, both following the same leader, on paths that converge from the
+  side. Neither is on the other's path ahead until they touch, so neither brakes. **A stage-1 limitation** (no
+  crossing or merge anticipation, which the brief deferred to stage 2). It comes from the agents being off their log
+  timing, not from the reaction rule.
+- **Deceleration at the cap:** 13 of the 100 dev100 scenes reach 6 m/s² (reported as a limitation).
+- **Minor inconsistency (no effect on the simulation):** `LogPathAgent.eligible` checks only the nuScenes category
+  (`vehicle.*`), while `ReactiveTraffic` also requires the ScenarioNet type `VEHICLE`. Motorcycles and bicycles
+  therefore look eligible to the diagnostic helpers (used for selecting (b) cases) but replay. Not fixed.
+- **Verdict against the recorded (d) targets:** 0 rear-ends by an eligible agent with the ego as leader (pass);
+  2 new overlaps, both explained, neither caused by the reaction rule (pass); max decel ≤ 6 m/s² with 13 / 100 scenes
+  at the cap (limitation). **No bug was found, so (a)–(d) were not rerun.**
