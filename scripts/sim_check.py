@@ -1049,14 +1049,26 @@ def showcase(data_dir, index, checkpoint, out, reactive, follow=35.0):
                 agent_configs={"default_agent": dict(use_special_color=True, spawn_lane_index=None, **zoe)})
     tmp = OUT_DIR / "showcase"
     tmp.mkdir(parents=True, exist_ok=True)
+    # the road user to highlight: the one the CV planner collides with (deterministic: fresh env per run)
+    env = ScenarioEnv(base)
+    try:
+        env.reset(seed=index)
+        m0, _ = cl.run_scene(env, cl.CVPredictor(), reactive=reactive)
+    finally:
+        env.close()
+    hits = [c for c in m0["collided"] if c["kind"] == "at_fault"]
+    if not hits:
+        raise SystemExit("the CV planner has no at-fault collision in this scene; pick another --index")
+    focus = hits[0]["object_id"]
+    print(f"highlighted road user: {hits[0]['category']} {focus[:8]} (CV collision at {hits[0]['t']:.1f} s)")
     gifs, summary = [], []
-    for pred, title in ((cl.CVPredictor(), "Constant-velocity predictions"),
-                        (cl.WorldModelPredictor(checkpoint), "World-model predictions")):
+    for pred, title in ((cl.CVPredictor(), "Planner with simple predictions\n(everyone keeps going straight)"),
+                        (cl.WorldModelPredictor(checkpoint), "Planner with our world model\n(learned predictions)")):
         env = ScenarioEnv(base)
         try:
             env.reset(seed=index)
             path = tmp / f"{pred.name.lower()}_scene{index}.gif"
-            m, _ = cl.run_scene(env, pred, viz=path, reactive=reactive, viz_follow=follow, viz_title=title)
+            m, _ = cl.run_scene(env, pred, viz=path, reactive=reactive, viz_title=title, viz_focus=focus)
         finally:
             env.close()
         gifs.append(Image.open(path))
@@ -1076,8 +1088,31 @@ def showcase(data_dir, index, checkpoint, out, reactive, follow=35.0):
             x += p_.width
         ImageDraw.Draw(canvas).line([(parts[0].width, 0), (parts[0].width, h)], fill=(160, 160, 160), width=2)
         frames.append(canvas.quantize(colors=128))
+    # title card: what the viewer is about to see
+    from PIL import ImageFont
+    w, h = frames[0].size
+    card = Image.new("RGB", (w, h), "white")
+    d = ImageDraw.Draw(card)
+    try:
+        big = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
+        small = ImageFont.truetype("DejaVuSans.ttf", 19)
+    except OSError:
+        big = small = ImageFont.load_default()
+    lines = [("Same street scene, two self-driving planners", big), ("", small),
+             ("Our car (green) re-plans every 0.5 s. Before each move it asks:", small),
+             ("where will the other road users be in the next 6 seconds?", small), ("", small),
+             ("Left: it assumes everyone keeps going straight at the same speed.", small),
+             ("Right: it asks our learned world model, trained on real nuScenes driving.", small), ("", small),
+             ("Watch the rider (purple).", big)]
+    y = h // 2 - 150
+    for text, font in lines:
+        tw = d.textlength(text, font=font)
+        d.text(((w - tw) / 2, y), text, fill=(30, 30, 30), font=font)
+        y += 40 if font is big else 30
+    frames = [card.quantize(colors=128)] + frames
     out.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(out, save_all=True, append_images=frames[1:], duration=350, loop=0, optimize=True)
+    frames[0].save(out, save_all=True, append_images=frames[1:], duration=[3500] + [450] * (len(frames) - 2) + [2500],
+                   loop=0, optimize=True)
     print(f"saved {out} ({out.stat().st_size / 1e6:.1f} MB, {len(frames)} frames) | " + " | ".join(summary))
 
 

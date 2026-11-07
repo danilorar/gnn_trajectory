@@ -17,11 +17,13 @@ pre-registered in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
   <img src="assets/closed_loop_cv_vs_wm.gif" width="960" alt="The same nuScenes scene planned twice: with constant-velocity predictions the ego hits a pedestrian on a personal mobility device; with world-model predictions it picks a plan without collision">
 </p>
 
-*The same scene (nuScenes mini scene-1094, a development scene) with reactive agents, planned twice. Every 0.5 s the
-planner scores 35 candidate plans (thin blue) against the predicted futures of nearby agents (red: vehicles, orange:
-pedestrians; opacity = probability) and drives the cheapest one (thick green).
-**Left:** with constant-velocity predictions the conflict shows up only 0.2 s ahead, when every plan is already risky, and the ego hits the rider (5.7 s).
-**Right:** the world model predicts the crossing, so the chosen plan avoids it.*
+*The same street scene (nuScenes mini scene-1094, a development scene; other road users react to our car), driven
+twice. Our car (green) re-plans every 0.5 s and drives the plan shown. The rider (purple) is drawn with where each
+planner believes they will go.
+**Left:** the planner assumes everyone keeps going straight at constant speed. It sees the conflict only 0.2 s ahead,
+when no safe plan is left, and hits the rider.
+**Right:** with the learned world model, the rider's move into our path is predicted early. Our car slows down and
+passes without a collision.*
 
 <p align="center">
   <img src="assets/prediction_examples_val.png" width="960" alt="Eight val examples of six predicted modes against the ground truth, two per turn-angle bin">
@@ -37,6 +39,14 @@ number is the mode probability; solid = top mode); blue: 2 s of history.*
 *The predictions depend on the ego's plan. The car behind the ego is predicted to slow down when the ego plans to brake
 (red) and to speed up when the ego plans to accelerate (blue). The reaction is weaker than it should be (see the
 limitations).*
+
+<p align="center">
+  <img src="docs/architecture.png" width="960" alt="v2 model: agent, lane and ego-plan encoders, a scene transformer with a relative-pose attention bias, and an anchor decoder giving 6 paths and probabilities for 16 agents">
+</p>
+
+*The world model: agents, lane segments and the candidate ego plan become tokens, a scene transformer mixes them
+(with a relative-pose attention bias), and an anchor decoder outputs 6 future paths with probabilities for each of 16
+agents.*
 
 ## Results
 

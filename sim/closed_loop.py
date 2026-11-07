@@ -333,7 +333,7 @@ CUT_IN_S = 2.0      # reactive mode: hit from behind within 2 s after the ego en
 
 def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_steps=5, shadow=None, viz=None,
               nearby_radius=30.0, device="cuda", reactive=False, drive_log_scale=None, viz_follow=None,
-              viz_title=None):
+              viz_title=None, viz_focus=None):
     """One closed-loop episode (or the logged ego with expert=True). Returns metrics and the chosen-plan log.
 
     shadow: a second predictor run on the chosen plan only (e.g. the WM during a CV run), for diagnostics.
@@ -397,7 +397,11 @@ def run_scene(env, predictor, weights=WEIGHTS, gif=None, expert=False, replan_st
                     coverage.append((len(near), sum(i in wm.last_wm_ids for i in near)))
                     pred_log.append(dict(step=step, ids=list(w_ids), paths=w_paths, probs=w_probs,
                                          wm_ids=set(wm.last_wm_ids), plan=dense[k].copy()))
-                if viz is not None:
+                if viz is not None and viz_focus is not None:
+                    viz_frames.append(render_story_frame(
+                        scene, dense[k], paths[k], probs[k], ids, entry, features, viz_focus, viz_title,
+                        any(h[1] for h in hits.values()), trail=[p_[:2] for p_ in poses], ego_size=ego_size))
+                elif viz is not None:
                     viz_frames.append(render_planning_frame(
                         scene, ref, dense, k, paths, probs, ids, entry, predictor.name, features, follow=viz_follow,
                         collisions=sum(1 for h in hits.values() if h[1]), trail=[p_[:2] for p_ in poses],
@@ -653,6 +657,87 @@ def render_planning_frame(scene, ref, dense, k, paths, probs, ids, entry, name, 
     ax.set_xticks([])
     ax.set_yticks([])
     fig.tight_layout()
+    fig.canvas.draw()
+    img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+    plt.close(fig)
+    return img
+
+
+def render_story_frame(scene, plan_dense, paths, probs, ids, entry, features, focus, title, collided,
+                       trail=None, half_width=18.0, ego_size=(1.73, 4.08)):
+    """A simple view for people who do not know the project: the road (lane surfaces), our car (green) with only
+    the plan it drives, one highlighted road user (purple) with its predicted path(s) - the planner's belief - and
+    everyone else in grey. Plain-language status line; red banner after a collision."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as MplPolygon
+    ex, ey, eyaw, ev = scene.ego
+    lo, hi = np.array([ex, ey]) - half_width, np.array([ex, ey]) + half_width
+    fig, ax = plt.subplots(figsize=(6, 7.0), dpi=90)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#f7f7f2")
+    for f in features.values():
+        if not f["type"].startswith("LANE_SURFACE"):
+            continue
+        poly = f.get("polygon")
+        pl = np.asarray(f["polyline"])[:, :2]
+        if not ((pl > lo - 20) & (pl < hi + 20)).all(1).any():
+            continue
+        if poly is not None and len(poly) >= 3:
+            ax.add_patch(MplPolygon(np.asarray(poly)[:, :2], closed=True, facecolor="#dcdcdc", edgecolor="none",
+                                    zorder=1))
+        ax.plot(pl[:, 0], pl[:, 1], color="white", lw=0.8, ls=(0, (4, 4)), zorder=2)
+    now = scene.buffer.now()
+    for a, i in enumerate(ids):
+        x, y, yaw, w_, l_, cat = now[i]
+        if i == focus:
+            continue
+        b = box(x, y, yaw, max(l_, 0.6), max(w_, 0.6))
+        ax.fill(*b.exterior.xy, color="#9a9a9a" if cat.startswith("vehicle.") else "#b5b5b5", lw=0, zorder=4)
+    if focus in now:
+        x, y, yaw, w_, l_, cat = now[focus]
+        if focus in ids:
+            a = ids.index(focus)
+            order = np.argsort(probs[a])[::-1][:3]
+            for m_ in order:
+                pr = float(probs[a, m_])
+                if pr < 0.05:
+                    continue
+                pth = np.vstack([[x, y], paths[a, m_]])
+                ax.plot(pth[:, 0], pth[:, 1], color="#7b3fbf", lw=4, alpha=min(1.0, 0.3 + pr), zorder=5,
+                        solid_capstyle="round")
+                ax.plot(*pth[-1], "o", color="#7b3fbf", ms=7, alpha=min(1.0, 0.3 + pr), zorder=5)
+        b = box(x, y, yaw, max(l_, 1.0), max(w_, 1.0))
+        ax.fill(*b.exterior.xy, color="#7b3fbf", lw=0, zorder=6)
+        ax.text(x + 1.2, y + 1.2, "rider", color="#7b3fbf", fontsize=10, weight="bold", zorder=9)
+    if trail is not None and len(trail) > 1:
+        tr = np.asarray(trail)
+        ax.plot(tr[:, 0], tr[:, 1], color="#2e8b57", lw=1.2, ls=":", zorder=3)
+    ax.plot(plan_dense[:, 0], plan_dense[:, 1], color="#2e8b57", lw=4, alpha=0.75, zorder=7, solid_capstyle="round")
+    eb = box(ex, ey, eyaw, ego_size[1], ego_size[0])
+    ax.fill(*eb.exterior.xy, color="#1f7a3a", lw=0, zorder=8)
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_color("#cccccc")
+    ax.set_title(title, fontsize=13, weight="bold", pad=8)
+    speed = entry["speed"]
+    plan_txt = "plan: stop" if speed < 0.5 else f"plan: drive at {speed:.0f} m/s"
+    ax.text(0.5, -0.03, f"t = {entry['t']:.1f} s     our speed {ev:.1f} m/s     {plan_txt}", transform=ax.transAxes,
+            ha="center", va="top", fontsize=10.5, weight="bold")
+    if collided:
+        ax.text(0.5, 0.95, "COLLISION", transform=ax.transAxes, ha="center", va="top", fontsize=16, color="white",
+                weight="bold", bbox=dict(facecolor="#d62728", edgecolor="none", boxstyle="round,pad=0.3"), zorder=12)
+    handles = [plt.Line2D([], [], color="#1f7a3a", lw=4), plt.Line2D([], [], color="#7b3fbf", lw=2.5),
+               plt.Line2D([], [], color="#9a9a9a", lw=6)]
+    ax.legend(handles, ["our car + the plan it drives", "rider + where the planner thinks they go",
+                        "other road users"], loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=1, fontsize=9.5,
+              frameon=False)
+    fig.subplots_adjust(left=0.03, right=0.97, top=0.92, bottom=0.2)
     fig.canvas.draw()
     img = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
     plt.close(fig)
